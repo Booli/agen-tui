@@ -264,15 +264,42 @@ func prettyJSON(raw json.RawMessage) string {
 }
 
 func appendResult(body []string, t session.ToolCall, w int, label func(string) string) []string {
+	text := cleanResultText(t.ResultText)
 	switch {
-	case t.ResultText != "":
+	case text != "" && t.Error:
+		body = append(body, label("error"))
+		for _, line := range ui.HeadTailLines(text, 30, 5, w-1) {
+			body = append(body, theme.Untracked.Render(line))
+		}
+	case text != "":
 		body = append(body, label("result"))
-		body = append(body, ui.HeadTailLines(t.ResultText, 30, 5, w-1)...)
+		body = append(body, ui.HeadTailLines(text, 30, 5, w-1)...)
 	case t.Done:
 		body = append(body, label("result"), " "+theme.Muted.Render("(empty)"))
 	default:
 		body = append(body, label("result"), " "+theme.Muted.Render("(in flight)"))
 	}
 	return body
+}
+
+// cleanResultText strips XML-like wrapper tags that Claude Code injects
+// into tool results (e.g. <tool_use_error>msg</tool_use_error>).
+func cleanResultText(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	// Strip a matching <tag>content</tag> or a bare trailing </tag>
+	if i := strings.LastIndex(s, "</"); i >= 0 && strings.HasSuffix(s, ">") {
+		tagName := s[i+2 : len(s)-1]
+		if !strings.ContainsAny(tagName, " \t\n") {
+			openTag := "<" + tagName + ">"
+			if strings.HasPrefix(s, openTag) {
+				return strings.TrimSpace(s[len(openTag):i])
+			}
+			return strings.TrimSpace(s[:i])
+		}
+	}
+	return s
 }
 

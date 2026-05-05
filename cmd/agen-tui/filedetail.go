@@ -10,13 +10,15 @@ import (
 	"github.com/pimrutgers/agen-tui/internal/ui"
 )
 
-// fileDetailView is the diff overlay shown when the user opens a file
-// from flat or tree view. It owns its own viewport and keeps fetching
-// the diff once on construction. The model dismisses it on closeOverlayMsg.
+// fileDetailView is the overlay shown when the user opens a file from
+// flat or tree view. In diff mode it shows git diff; in view mode it
+// shows syntax-highlighted file content.
 type fileDetailView struct {
 	path      string
 	untracked bool
 	diff      string
+	content   string
+	isView    bool // true = file-content view, false = diff view
 	loading   bool
 	err       error
 	vp        viewport.Model
@@ -45,6 +47,22 @@ func newFileDetailView(path string, untracked bool, width, height int) fileDetai
 	return v
 }
 
+func newFileViewDetail(path string, width, height int) fileDetailView {
+	v := fileDetailView{
+		path:    path,
+		isView:  true,
+		loading: true,
+		width:   width,
+		height:  height,
+	}
+	v.keys.Close = key.NewBinding(key.WithKeys("esc", "enter", " "))
+	v.keys.Up = key.NewBinding(key.WithKeys("k", "up"))
+	v.keys.Down = key.NewBinding(key.WithKeys("j", "down"))
+	v.vp = viewport.New(width, height)
+	v.vp.SetContent(v.body())
+	return v
+}
+
 func (v fileDetailView) SetSize(width, height int) fileDetailView {
 	v.width = width
 	v.height = height
@@ -60,6 +78,18 @@ func (v fileDetailView) SetDiff(path, diff string, err error) fileDetailView {
 		return v // user moved on
 	}
 	v.diff = diff
+	v.err = err
+	v.loading = false
+	v.vp.SetContent(v.body())
+	return v
+}
+
+// SetContent applies the result of doFileRead. Loading is cleared.
+func (v fileDetailView) SetContent(path, content string, err error) fileDetailView {
+	if path != v.path {
+		return v
+	}
+	v.content = content
 	v.err = err
 	v.loading = false
 	v.vp.SetContent(v.body())
@@ -92,6 +122,20 @@ func (v fileDetailView) body() string {
 	colW := v.width - 2
 	if colW < 10 {
 		colW = 10
+	}
+
+	if v.isView {
+		header := " " + theme.Bold.Render(v.path)
+		body := []string{header, divider(v.width)}
+		switch {
+		case v.loading:
+			body = append(body, theme.Muted.Render(" loading…"))
+		case v.err != nil:
+			body = append(body, theme.Untracked.Render(" "+v.err.Error()))
+		default:
+			body = append(body, strings.Split(v.content, "\n")...)
+		}
+		return strings.Join(body, "\n")
 	}
 
 	var statusLabel string

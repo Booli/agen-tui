@@ -119,9 +119,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fileDetail = &d
 		}
 
+	case fileContentMsg:
+		if m.fileDetail != nil {
+			d := m.fileDetail.SetContent(msg.path, msg.content, msg.err)
+			m.fileDetail = &d
+		}
+
 	case openFileDetailMsg:
 		bodyH := m.bodyHeight()
 		d := newFileDetailView(msg.path, msg.untracked, m.width, bodyH)
+		m.fileDetail = &d
+
+	case openFileViewMsg:
+		bodyH := m.bodyHeight()
+		d := newFileViewDetail(msg.path, m.width, bodyH)
 		m.fileDetail = &d
 
 	case closeOverlayMsg:
@@ -192,9 +203,13 @@ func (m model) viewGit() string {
 	lines = append(lines, divider(m.width))
 
 	if m.fileDetail != nil {
+		overlayLabel := "diff"
+		if m.fileDetail.isView {
+			overlayLabel = "view"
+		}
 		lines = append(lines, m.fileDetail.View())
 		lines = append(lines, divider(m.width))
-		lines = append(lines, m.overlayFooter("diff"))
+		lines = append(lines, m.overlayFooter(overlayLabel))
 		return strings.Join(lines, "\n") + "\n"
 	}
 
@@ -227,7 +242,7 @@ func (m model) modeFooter() string {
 			theme.Muted.Render("g/t:tree  ⏎:diff  o:edit  q:quit")
 	case modeTree:
 		return " " + theme.Cyan.Render("tree") + "  " +
-			theme.Muted.Render("g/t:tools  ⏎:diff  o:edit  q:quit")
+			theme.Muted.Render("g/t:tools  ⏎:view  o:edit  q:quit")
 	case modeTools:
 		return " " + theme.Cyan.Render("tools") + " " +
 			theme.Muted.Render("["+m.tools.FilterLabel()+"]  ") +

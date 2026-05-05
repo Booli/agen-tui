@@ -13,7 +13,7 @@ import (
 type treeKeyMap struct {
 	Up     key.Binding
 	Down   key.Binding
-	Toggle key.Binding // expand/collapse dir, or open file diff
+	Toggle key.Binding // expand/collapse dir, or view file content
 	Edit   key.Binding // open file in main tmux pane
 }
 
@@ -21,7 +21,7 @@ func newTreeKeys() treeKeyMap {
 	return treeKeyMap{
 		Up:     key.NewBinding(key.WithKeys("k", "up")),
 		Down:   key.NewBinding(key.WithKeys("j", "down")),
-		Toggle: key.NewBinding(key.WithKeys("enter", " ")),
+		Toggle: key.NewBinding(key.WithKeys("enter")),
 		Edit:   key.NewBinding(key.WithKeys("o")),
 	}
 }
@@ -101,7 +101,7 @@ func (v treeView) Update(msg tea.Msg) (treeView, tea.Cmd) {
 					v.visible = buildVisible(v.root, v.expanded)
 					v = v.clamp()
 				} else {
-					return v, openFileDetail(n.Path, n.XY == "??", v.repoRoot)
+					return v, openFileView(n.Path, v.repoRoot)
 				}
 			}
 		case key.Matches(k, v.keys.Edit):

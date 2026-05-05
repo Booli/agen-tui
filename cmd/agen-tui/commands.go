@@ -11,6 +11,7 @@ import (
 	"github.com/pimrutgers/agen-tui/internal/filetree"
 	"github.com/pimrutgers/agen-tui/internal/git"
 	"github.com/pimrutgers/agen-tui/internal/session"
+	"github.com/pimrutgers/agen-tui/internal/ui"
 )
 
 // ── messages ──────────────────────────────────────────────────────────────────
@@ -111,6 +112,37 @@ func openFileDetail(path string, untracked bool, root string) tea.Cmd {
 	return tea.Batch(
 		func() tea.Msg { return openFileDetailMsg{path: path, untracked: untracked} },
 		doFileDiff(root, path, untracked),
+	)
+}
+
+type fileContentMsg struct {
+	path    string
+	content string
+	err     error
+}
+
+// openFileViewMsg asks the parent to switch into a syntax-highlighted
+// file-view overlay (not diff). The accompanying doFileRead command
+// delivers a fileContentMsg shortly after.
+type openFileViewMsg struct {
+	path string
+}
+
+func doFileRead(root, path string) tea.Cmd {
+	return func() tea.Msg {
+		abs := filepath.Join(root, path)
+		data, err := os.ReadFile(abs)
+		if err != nil {
+			return fileContentMsg{path: path, err: err}
+		}
+		return fileContentMsg{path: path, content: ui.Highlight(string(data), path)}
+	}
+}
+
+func openFileView(path, root string) tea.Cmd {
+	return tea.Batch(
+		func() tea.Msg { return openFileViewMsg{path: path} },
+		doFileRead(root, path),
 	)
 }
 
