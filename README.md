@@ -4,11 +4,29 @@ Tmux sidebar for working alongside Claude Code. Bubble Tea TUI showing git statu
 
 ## Install
 
+### Existing checkout
+
 ```
 make install
 ```
 
 Installs `agen-tui` to `~/.local/bin`.
+
+### Fresh machine (one-shot)
+
+Sets up the binary, the tmux sidebar script, and the `prefix + g` binding. Idempotent. Works on Linux (apt/dnf/pacman) and macOS (brew). Requires `git` and `go` (the script will install them via the detected package manager if missing).
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Booli/agen-tui/main/scripts/install.sh | bash
+```
+
+Add `--full` for sesh, fzf, zoxide, bat, micro:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Booli/agen-tui/main/scripts/install.sh | bash -s -- --full
+```
+
+Make sure `$HOME/.local/bin` is on your `PATH` after.
 
 ## Use
 

@@ -3,7 +3,6 @@ package session
 import (
 	"bufio"
 	"encoding/json"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,13 +12,18 @@ import (
 type Stats struct {
 	SessionID         string
 	Model             string
-	Turns             int
+	Prompts           int // user-typed messages (excludes tool_result roundtrips)
+	ToolCalls         int // total tool_use blocks across all assistant messages
 	InputTokens       int64
 	OutputTokens      int64
 	CacheReadTokens   int64
 	CacheCreateTokens int64
 	StartTime         time.Time
 	LastTime          time.Time
+
+	// Sessions counts how many session files contributed to this Stats.
+	// 0 for a single Parse(); positive only when ParseProject filled it.
+	Sessions int
 }
 
 func (s Stats) CacheHitPct() float64 {
@@ -30,29 +34,13 @@ func (s Stats) CacheHitPct() float64 {
 	return float64(s.CacheReadTokens) / float64(total) * 100
 }
 
-func (s Stats) CostUSD() float64 {
-	var inR, outR, readR, createR float64
-	switch {
-	case strings.Contains(s.Model, "opus"):
-		inR, outR, readR, createR = 15, 75, 1.5, 18.75
-	case strings.Contains(s.Model, "haiku"):
-		inR, outR, readR, createR = 0.8, 4, 0.08, 1.0
-	default: // sonnet
-		inR, outR, readR, createR = 3, 15, 0.3, 3.75
-	}
-	cost := float64(s.InputTokens)/1e6*inR +
-		float64(s.OutputTokens)/1e6*outR +
-		float64(s.CacheReadTokens)/1e6*readR +
-		float64(s.CacheCreateTokens)/1e6*createR
-	return math.Round(cost*100) / 100
-}
-
 func (s Stats) Add(o Stats) Stats {
 	s.InputTokens += o.InputTokens
 	s.OutputTokens += o.OutputTokens
 	s.CacheReadTokens += o.CacheReadTokens
 	s.CacheCreateTokens += o.CacheCreateTokens
-	s.Turns += o.Turns
+	s.Prompts += o.Prompts
+	s.ToolCalls += o.ToolCalls
 	return s
 }
 
@@ -114,6 +102,15 @@ type assistantMsg struct {
 		CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
 		CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 	} `json:"usage"`
+	Content []struct {
+		Type string `json:"type"`
+	} `json:"content"`
+}
+
+// userContentItem matches one element of a user message's content
+// array; we only care whether it's a tool_result block.
+type userContentItem struct {
+	Type string `json:"type"`
 }
 
 // Parse reads a single session JSONL and returns aggregated stats.
@@ -150,7 +147,14 @@ func Parse(path string) (Stats, error) {
 
 		switch r.Type {
 		case "user":
-			s.Turns++
+			// Prompts only count when the message is a real user
+			// message (string content, or array content without any
+			// tool_result blocks). Tool-result roundtrips are also
+			// emitted as `user` records but should not inflate the
+			// prompt count.
+			if !hasToolResult(r.Message) {
+				s.Prompts++
+			}
 		case "assistant":
 			var msg assistantMsg
 			if err := json.Unmarshal(r.Message, &msg); err != nil {
@@ -163,19 +167,48 @@ func Parse(path string) (Stats, error) {
 			s.OutputTokens += msg.Usage.OutputTokens
 			s.CacheReadTokens += msg.Usage.CacheReadInputTokens
 			s.CacheCreateTokens += msg.Usage.CacheCreationInputTokens
+			for _, c := range msg.Content {
+				if c.Type == "tool_use" {
+					s.ToolCalls++
+				}
+			}
 		}
 	}
 
 	return s, scanner.Err()
 }
 
-// ParseProject aggregates stats across all sessions for the given cwd's project.
+// hasToolResult returns true if the user message's `content` field is
+// an array containing at least one tool_result block. Falls back to
+// false when content is a plain string (a real text prompt).
+func hasToolResult(rawMsg json.RawMessage) bool {
+	var wrapper struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(rawMsg, &wrapper); err != nil {
+		return false
+	}
+	var items []userContentItem
+	if err := json.Unmarshal(wrapper.Content, &items); err != nil {
+		return false // content was a string
+	}
+	for _, it := range items {
+		if it.Type == "tool_result" {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseProject aggregates stats across all sessions for the given
+// cwd's project, recording how many sessions contributed.
 func ParseProject(cwd string) Stats {
 	var total Stats
 	for _, f := range ProjectFiles(cwd) {
 		s, err := Parse(f)
 		if err == nil {
 			total = total.Add(s)
+			total.Sessions++
 		}
 	}
 	return total

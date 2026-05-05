@@ -87,33 +87,30 @@ func renderDiffBlocks(a, b []string, filename string, width int) []string {
 	return out
 }
 
-// RenderDiffRow formats a single diff row. The +/-/space marker is
-// tinted with our diff palette; the body is syntax-highlighted via
-// chroma when filename has a recognised extension.
-func RenderDiffRow(kind byte, text, filename string, width int) string {
-	var prefixStyle lipgloss.Style
+// RenderDiffRow formats a single diff row with the appropriate
+// diff-palette tint applied to the whole line. The filename argument
+// is currently unused (chroma highlighting was tried here but
+// conflicted with the at-a-glance "added/removed" signal); kept on the
+// signature for forward-compatibility.
+func RenderDiffRow(kind byte, text, _ string, width int) string {
+	var style lipgloss.Style
 	switch kind {
 	case '-':
-		prefixStyle = theme.DiffDel
+		style = theme.DiffDel
 	case '+':
-		prefixStyle = theme.DiffAdd
+		style = theme.DiffAdd
 	default:
-		prefixStyle = theme.Muted
+		style = theme.Muted
 	}
 	body := TruncRunes(text, width-3)
-	if filename != "" {
-		body = Highlight(body, filename)
-	} else {
-		body = prefixStyle.Render(body)
-	}
-	return " " + prefixStyle.Render(string(kind)+" ") + body
+	return " " + style.Render(string(kind)+" ") + style.Render(body)
 }
 
 // RenderUnifiedDiff colours `git diff` output: + green, - red, @@
-// muted. Drops noisy headers. Body of `+`, `-`, and context lines is
-// syntax-highlighted via chroma when filename has a recognised
-// extension; the leading marker stays tinted in our diff palette so
-// added/removed status remains visible at a glance.
+// muted. Drops noisy headers. Body of `+` / `-` lines is tinted with
+// our diff palette so added/removed status is unambiguous at a glance;
+// context lines are syntax-highlighted via chroma when filename has a
+// recognised extension.
 func RenderUnifiedDiff(diff, filename string, width int) []string {
 	var out []string
 	for _, line := range strings.Split(diff, "\n") {
@@ -130,22 +127,16 @@ func RenderUnifiedDiff(diff, filename string, width int) []string {
 		case strings.HasPrefix(line, "@@"):
 			out = append(out, " "+theme.Muted.Render(TruncRunes(line, width-1)))
 		case strings.HasPrefix(line, "+"):
-			body := TruncRunes(line[1:], width-3)
-			out = append(out, " "+theme.DiffAdd.Render("+ ")+highlightOrPlain(body, filename))
+			out = append(out, " "+theme.DiffAdd.Render(TruncRunes(line, width-1)))
 		case strings.HasPrefix(line, "-"):
-			body := TruncRunes(line[1:], width-3)
-			out = append(out, " "+theme.DiffDel.Render("- ")+highlightOrPlain(body, filename))
+			out = append(out, " "+theme.DiffDel.Render(TruncRunes(line, width-1)))
 		default:
 			body := TruncRunes(line, width-1)
-			out = append(out, " "+highlightOrPlain(body, filename))
+			if filename != "" {
+				body = Highlight(body, filename)
+			}
+			out = append(out, " "+body)
 		}
 	}
 	return out
-}
-
-func highlightOrPlain(body, filename string) string {
-	if filename == "" {
-		return body
-	}
-	return Highlight(body, filename)
 }

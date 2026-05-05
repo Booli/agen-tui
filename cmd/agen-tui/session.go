@@ -28,19 +28,20 @@ func (m model) viewSession() string {
 	dur := fmtDuration(s.LastTime.Sub(s.StartTime))
 
 	line1 := " " + theme.Cyan.Render(modelShort) +
-		theme.Muted.Render("  "+dur+"  "+fmt.Sprintf("%dt", s.Turns))
+		theme.Muted.Render("  "+dur+"  "+
+			fmt.Sprintf("%dp  %dt", s.Prompts, s.ToolCalls))
 
 	inK := fmtK(s.InputTokens + s.CacheReadTokens)
 	outK := fmtK(s.OutputTokens)
-	line2 := fmt.Sprintf(" in:%s out:%s cache:%s%%  ~$%.2f",
+	line2 := fmt.Sprintf(" in:%s out:%s  cache:%s%%",
 		inK, outK,
-		theme.Staged.Render(fmt.Sprintf("%.0f", s.CacheHitPct())),
-		s.CostUSD())
+		theme.Staged.Render(fmt.Sprintf("%.0f", s.CacheHitPct())))
 
 	allIn := fmtK(a.InputTokens + a.CacheReadTokens)
 	allOut := fmtK(a.OutputTokens)
-	line3 := " " + theme.Muted.Render(fmt.Sprintf("project  in:%s out:%s  ~$%.2f",
-		allIn, allOut, a.CostUSD()))
+	line3 := " " + theme.Muted.Render(fmt.Sprintf(
+		"project  in:%s out:%s  %dp  %dt  %d sess",
+		allIn, allOut, a.Prompts, a.ToolCalls, a.Sessions))
 
 	return div + "\n" + line1 + "\n" + line2 + "\n" + line3 + "\n"
 }

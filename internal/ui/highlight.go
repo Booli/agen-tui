@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"os"
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
@@ -10,9 +11,22 @@ import (
 )
 
 var (
-	hlFormatter chroma.Formatter = formatters.Get("terminal256")
-	hlStyle     *chroma.Style    = styles.Get("github-dark")
+	hlFormatter chroma.Formatter = formatters.Get("terminal16")
+	hlStyle     *chroma.Style    = pickStyle()
 )
+
+// pickStyle resolves the chroma style by AGEN_TUI_CHROMA_STYLE if set,
+// falling back to a soft default that composes well with terminal
+// palettes. Use `chroma --list` for the full set; popular options:
+// monokai, dracula, nord, catppuccin-mocha, tokyo-night-dark, onedark.
+func pickStyle() *chroma.Style {
+	if name := os.Getenv("AGEN_TUI_CHROMA_STYLE"); name != "" {
+		if s := styles.Get(name); s != nil {
+			return s
+		}
+	}
+	return styles.Get("monokai")
+}
 
 // Highlight returns ANSI-styled source code, picking a chroma lexer by
 // the given filename's extension. If no lexer matches or the source is
