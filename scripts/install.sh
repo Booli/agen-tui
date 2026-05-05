@@ -1,29 +1,38 @@
 #!/usr/bin/env bash
 # Installs agen-tui + the tmux sidebar binding on the current host.
 # Idempotent: safe to re-run after upgrades. Defaults to a minimal
-# footprint (just agen-tui, tmux, go); pass --full to also install
+# footprint (just agen-tui + tmux); pass --full to also install
 # sesh, fzf, zoxide, bat, micro.
 #
+# By default downloads a pre-built release binary (no Go toolchain
+# needed). Falls back to a source build when no matching release exists
+# or when --from-source is passed.
+#
 # Usage:
-#   bash scripts/install.sh             # minimal
-#   bash scripts/install.sh --full      # everything
+#   bash scripts/install.sh                        # release binary
+#   bash scripts/install.sh --full                 # binary + extras
+#   bash scripts/install.sh --from-source          # build with go
 #   curl -fsSL https://raw.githubusercontent.com/Booli/agen-tui/main/scripts/install.sh | bash
 
 set -euo pipefail
 
 FULL=0
+FROM_SOURCE=0
 for arg in "$@"; do
     case "$arg" in
         --full) FULL=1 ;;
+        --from-source) FROM_SOURCE=1 ;;
         --help|-h)
-            sed -n '2,12p' "$0"
+            sed -n '2,16p' "$0"
             exit 0
             ;;
         *) echo "unknown flag: $arg" >&2; exit 2 ;;
     esac
 done
 
-REPO_URL="https://github.com/Booli/agen-tui.git"
+REPO_OWNER="Booli"
+REPO_NAME="agen-tui"
+REPO_URL="https://github.com/${REPO_OWNER}/${REPO_NAME}.git"
 PREFIX="${HOME}/.local/bin"
 SRC_DIR="${HOME}/.local/src/agen-tui"
 TMUX_PLUGIN_DIR="${HOME}/.tmux/plugins/git-sidebar/scripts"
@@ -61,28 +70,68 @@ pkg_install() {
 }
 
 # ── Core deps ─────────────────────────────────────────────────────────────────
-log "core deps (tmux, git, go)"
+log "core deps (tmux, curl)"
 case "$PM" in
     apt) sudo apt-get update -y >/dev/null ;;
 esac
 
 have tmux || pkg_install tmux
-have git  || pkg_install git
-have go   || pkg_install golang-go || pkg_install go
+have curl || pkg_install curl
 
-# ── Clone or update repo ──────────────────────────────────────────────────────
-if [ -d "$SRC_DIR/.git" ]; then
-    log "updating $SRC_DIR"
-    git -C "$SRC_DIR" pull --ff-only --quiet
+# ── Install agen-tui binary ───────────────────────────────────────────────────
+download_release() {
+    local OS ARCH LATEST URL
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    ARCH=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+
+    LATEST=$(curl -fsSL "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest" \
+              | grep '"tag_name"' | head -n1 | cut -d'"' -f4)
+    if [ -z "$LATEST" ]; then
+        return 1
+    fi
+
+    URL="https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/${LATEST}/${REPO_NAME}_${LATEST#v}_${OS}_${ARCH}.tar.gz"
+    log "downloading $URL"
+    if ! curl -fsSL "$URL" -o /tmp/agen-tui.tar.gz 2>/dev/null; then
+        return 1
+    fi
+
+    tar -xzf /tmp/agen-tui.tar.gz -C /tmp agen-tui
+    install -m 755 /tmp/agen-tui "$PREFIX/agen-tui"
+    rm -f /tmp/agen-tui.tar.gz /tmp/agen-tui
+    return 0
+}
+
+build_from_source() {
+    have git || pkg_install git
+    have go  || pkg_install golang-go || pkg_install go
+    if ! have go; then
+        warn "go not available; cannot build from source"
+        return 1
+    fi
+
+    if [ -d "$SRC_DIR/.git" ]; then
+        log "updating $SRC_DIR"
+        git -C "$SRC_DIR" pull --ff-only --quiet
+    else
+        log "cloning $REPO_URL -> $SRC_DIR"
+        git clone --quiet "$REPO_URL" "$SRC_DIR"
+    fi
+    log "building agen-tui"
+    ( cd "$SRC_DIR" && go build -o "$PREFIX/agen-tui" ./cmd/agen-tui )
+    return 0
+}
+
+if [ "$FROM_SOURCE" -eq 1 ]; then
+    build_from_source
 else
-    log "cloning $REPO_URL -> $SRC_DIR"
-    git clone --quiet "$REPO_URL" "$SRC_DIR"
+    if download_release; then
+        log "installed release binary: $PREFIX/agen-tui"
+    else
+        warn "no matching release binary; falling back to source build"
+        build_from_source
+    fi
 fi
-
-# ── Build agen-tui ────────────────────────────────────────────────────────────
-log "building agen-tui"
-( cd "$SRC_DIR" && go build -o "$PREFIX/agen-tui" ./cmd/agen-tui )
-log "installed: $PREFIX/agen-tui"
 
 # ── Drop in sidebar.sh ────────────────────────────────────────────────────────
 log "writing $TMUX_PLUGIN_DIR/sidebar.sh"

@@ -1,0 +1,57 @@
+version: 2
+
+project_name: agen-tui
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: agen-tui
+    main: ./cmd/agen-tui
+    binary: agen-tui
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+archives:
+  - id: default
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}amd64
+      {{- else if eq .Arch "arm64" }}arm64
+      {{- else }}{{ .Arch }}{{ end }}
+    formats:
+      - tar.gz
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "Merge "
+
+release:
+  github:
+    owner: Booli
+    name: agen-tui
+  draft: false
+  prerelease: auto

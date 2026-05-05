@@ -14,7 +14,7 @@ Installs `agen-tui` to `~/.local/bin`.
 
 ### Fresh machine (one-shot)
 
-Sets up the binary, the tmux sidebar script, and the `prefix + g` binding. Idempotent. Works on Linux (apt/dnf/pacman) and macOS (brew). Requires `git` and `go` (the script will install them via the detected package manager if missing).
+Downloads the latest release binary, drops in the tmux sidebar script, and binds `prefix + g`. Idempotent. Works on Linux (apt/dnf/pacman) and macOS (brew). Falls back to a source build (Go required) when no release binary matches the platform.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Booli/agen-tui/main/scripts/install.sh | bash
@@ -26,7 +26,22 @@ Add `--full` for sesh, fzf, zoxide, bat, micro:
 curl -fsSL https://raw.githubusercontent.com/Booli/agen-tui/main/scripts/install.sh | bash -s -- --full
 ```
 
+Force a source build:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Booli/agen-tui/main/scripts/install.sh | bash -s -- --from-source
+```
+
 Make sure `$HOME/.local/bin` is on your `PATH` after.
+
+### Cutting a release
+
+Push a `v*` tag. The release workflow runs goreleaser and attaches `linux/darwin × amd64/arm64` tarballs to a GitHub Release; the install script picks them up automatically.
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
 
 ## Use
 
