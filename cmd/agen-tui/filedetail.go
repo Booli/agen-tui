@@ -116,7 +116,7 @@ func (v fileDetailView) body() string {
 		body = append(body,
 			ui.NumberedHead(strings.Split(v.diff, "\n"), 60, colW-5)...)
 	default:
-		body = append(body, ui.RenderUnifiedDiff(v.diff, colW)...)
+		body = append(body, ui.RenderUnifiedDiff(v.diff, v.path, colW)...)
 	}
 	return strings.Join(body, "\n")
 }

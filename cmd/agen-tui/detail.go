@@ -66,7 +66,7 @@ func detailEdit(path, old, neu, replaceAll string, t session.ToolCall, w int, la
 		out = append(out, " "+theme.Muted.Render("(replace_all)"))
 	}
 	out = append(out, label("diff"))
-	out = append(out, ui.RenderDiff(old, neu, w)...)
+	out = append(out, ui.RenderDiff(old, neu, path, w)...)
 	return appendResult(out, t, w, label)
 }
 
@@ -80,7 +80,7 @@ func detailMultiEdit(path string, editsRaw json.RawMessage, t session.ToolCall, 
 	_ = json.Unmarshal(editsRaw, &edits)
 	for i, e := range edits {
 		out = append(out, label("edit "+ui.Itoa(i+1)+"/"+ui.Itoa(len(edits))))
-		out = append(out, ui.RenderDiff(e.Old, e.New, w)...)
+		out = append(out, ui.RenderDiff(e.Old, e.New, path, w)...)
 	}
 	return appendResult(out, t, w, label)
 }
@@ -92,7 +92,12 @@ func detailWrite(path, content string, t session.ToolCall, w int, label func(str
 		" " + theme.Muted.Render("size") + "  " + ui.Itoa(len(lines)) + " lines",
 		label("content"),
 	}
-	out = append(out, ui.NumberedHead(lines, 20, w-5)...)
+	highlighted := ui.Highlight(content, path)
+	hlLines := strings.Split(highlighted, "\n")
+	if len(hlLines) != len(lines) {
+		hlLines = lines // fallback if chroma split changed line count
+	}
+	out = append(out, ui.NumberedHead(hlLines, 20, w-5)...)
 	return appendResult(out, t, w, label)
 }
 

@@ -19,17 +19,18 @@ type DiffRow struct {
 }
 
 // RenderDiff returns coloured `-`/`+`/context lines for old→neu at
-// line granularity.
-func RenderDiff(old, neu string, width int) []string {
+// line granularity. Filename, if non-empty, drives chroma syntax
+// highlighting of each row's body.
+func RenderDiff(old, neu, filename string, width int) []string {
 	a := strings.Split(old, "\n")
 	b := strings.Split(neu, "\n")
 	if len(a) > DiffMaxLines || len(b) > DiffMaxLines {
-		return renderDiffBlocks(a, b, width)
+		return renderDiffBlocks(a, b, filename, width)
 	}
 	rows := LCSDiff(a, b)
 	var out []string
 	for _, r := range rows {
-		out = append(out, RenderDiffRow(r.Kind, r.Text, width))
+		out = append(out, RenderDiffRow(r.Kind, r.Text, filename, width))
 	}
 	return out
 }
@@ -75,36 +76,45 @@ func LCSDiff(a, b []string) []DiffRow {
 	return rev
 }
 
-func renderDiffBlocks(a, b []string, width int) []string {
+func renderDiffBlocks(a, b []string, filename string, width int) []string {
 	var out []string
 	for _, ln := range a {
-		out = append(out, RenderDiffRow('-', ln, width))
+		out = append(out, RenderDiffRow('-', ln, filename, width))
 	}
 	for _, ln := range b {
-		out = append(out, RenderDiffRow('+', ln, width))
+		out = append(out, RenderDiffRow('+', ln, filename, width))
 	}
 	return out
 }
 
-// RenderDiffRow formats a single diff row with the appropriate colour.
-func RenderDiffRow(kind byte, text string, width int) string {
-	var style lipgloss.Style
+// RenderDiffRow formats a single diff row. The +/-/space marker is
+// tinted with our diff palette; the body is syntax-highlighted via
+// chroma when filename has a recognised extension.
+func RenderDiffRow(kind byte, text, filename string, width int) string {
+	var prefixStyle lipgloss.Style
 	switch kind {
 	case '-':
-		style = theme.DiffDel
+		prefixStyle = theme.DiffDel
 	case '+':
-		style = theme.DiffAdd
+		prefixStyle = theme.DiffAdd
 	default:
-		style = theme.Muted
+		prefixStyle = theme.Muted
 	}
 	body := TruncRunes(text, width-3)
-	return " " + style.Render(string(kind)+" ") + style.Render(body)
+	if filename != "" {
+		body = Highlight(body, filename)
+	} else {
+		body = prefixStyle.Render(body)
+	}
+	return " " + prefixStyle.Render(string(kind)+" ") + body
 }
 
 // RenderUnifiedDiff colours `git diff` output: + green, - red, @@
-// muted. Drops noisy headers (`diff --git`, `index`, `---`, `+++`,
-// mode lines, similarity/rename headers).
-func RenderUnifiedDiff(diff string, width int) []string {
+// muted. Drops noisy headers. Body of `+`, `-`, and context lines is
+// syntax-highlighted via chroma when filename has a recognised
+// extension; the leading marker stays tinted in our diff palette so
+// added/removed status remains visible at a glance.
+func RenderUnifiedDiff(diff, filename string, width int) []string {
 	var out []string
 	for _, line := range strings.Split(diff, "\n") {
 		switch {
@@ -120,12 +130,22 @@ func RenderUnifiedDiff(diff string, width int) []string {
 		case strings.HasPrefix(line, "@@"):
 			out = append(out, " "+theme.Muted.Render(TruncRunes(line, width-1)))
 		case strings.HasPrefix(line, "+"):
-			out = append(out, " "+theme.DiffAdd.Render(TruncRunes(line, width-1)))
+			body := TruncRunes(line[1:], width-3)
+			out = append(out, " "+theme.DiffAdd.Render("+ ")+highlightOrPlain(body, filename))
 		case strings.HasPrefix(line, "-"):
-			out = append(out, " "+theme.DiffDel.Render(TruncRunes(line, width-1)))
+			body := TruncRunes(line[1:], width-3)
+			out = append(out, " "+theme.DiffDel.Render("- ")+highlightOrPlain(body, filename))
 		default:
-			out = append(out, " "+TruncRunes(line, width-1))
+			body := TruncRunes(line, width-1)
+			out = append(out, " "+highlightOrPlain(body, filename))
 		}
 	}
 	return out
+}
+
+func highlightOrPlain(body, filename string) string {
+	if filename == "" {
+		return body
+	}
+	return Highlight(body, filename)
 }
