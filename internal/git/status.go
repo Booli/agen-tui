@@ -124,6 +124,49 @@ func numstat(root, path string) (int, int) {
 	return 0, 0
 }
 
+// AllFiles returns all tracked and untracked non-ignored files as repo-relative paths.
+func AllFiles(root string) ([]string, error) {
+	out1, err := exec.Command("git", "-C", root, "ls-files").Output()
+	if err != nil {
+		return nil, err
+	}
+	out2, _ := exec.Command("git", "-C", root, "ls-files", "--others", "--exclude-standard").Output()
+
+	seen := make(map[string]bool)
+	var files []string
+	combined := strings.TrimRight(string(out1)+string(out2), "\n")
+	for _, line := range strings.Split(combined, "\n") {
+		if line != "" && !seen[line] {
+			seen[line] = true
+			files = append(files, line)
+		}
+	}
+	return files, nil
+}
+
+// Diff returns the unified diff for a single repo-relative path,
+// covering both staged and unstaged changes against HEAD. For untracked
+// files it returns the file's contents instead — there is no meaningful
+// diff against history.
+func Diff(root, path string, untracked bool) (string, error) {
+	if untracked {
+		out, err := exec.Command("cat", filepath.Join(root, path)).Output()
+		return string(out), err
+	}
+	out, err := exec.Command("git", "-C", root,
+		"diff", "HEAD", "--no-color", "--", path).Output()
+	if err != nil {
+		// HEAD may not exist yet (initial commit). Fall back to --cached
+		// which still shows the staged contents of newly-added files.
+		out, err = exec.Command("git", "-C", root,
+			"diff", "--cached", "--no-color", "--", path).Output()
+		if err != nil {
+			return "", err
+		}
+	}
+	return string(out), nil
+}
+
 // ShortPath shortens a repo-relative path for display in a narrow pane.
 func ShortPath(path string, maxWidth int) string {
 	if len(path) <= maxWidth {

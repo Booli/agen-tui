@@ -5,11 +5,11 @@ BIN_DIR := $(HOME)/.local/bin
 all: build
 
 build:
-	go build -o bin/git-sidebar ./cmd/git-sidebar
+	go build -o bin/agen-tui ./cmd/agen-tui
 
 install: build
 	mkdir -p $(BIN_DIR)
-	cp bin/git-sidebar $(BIN_DIR)/git-sidebar
+	cp bin/agen-tui $(BIN_DIR)/agen-tui
 
 clean:
 	rm -rf bin/
