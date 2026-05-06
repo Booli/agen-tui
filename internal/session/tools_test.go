@@ -267,6 +267,39 @@ func TestRecentToolsBadFile(t *testing.T) {
 	}
 }
 
+// TestRecentToolsBytes verifies that RecentToolsBytes produces the same
+// results as RecentTools on the same content.
+func TestRecentToolsBytes(t *testing.T) {
+	records := []string{
+		`{"type":"assistant","timestamp":"2026-05-05T10:00:00Z","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/a.go"}}]}}`,
+		`{"type":"user","timestamp":"2026-05-05T10:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":false}]}}`,
+	}
+	path := writeJSONL(t, records)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byPath, err := RecentTools(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byBytes, err := RecentToolsBytes(data, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(byPath) != len(byBytes) {
+		t.Fatalf("len mismatch: path=%d bytes=%d", len(byPath), len(byBytes))
+	}
+	for i := range byPath {
+		if byPath[i].ID != byBytes[i].ID || byPath[i].Name != byBytes[i].Name || byPath[i].Done != byBytes[i].Done {
+			t.Errorf("call[%d] mismatch: %+v vs %+v", i, byPath[i], byBytes[i])
+		}
+	}
+}
+
 func itoa(i int) string {
 	if i == 0 {
 		return "0"
