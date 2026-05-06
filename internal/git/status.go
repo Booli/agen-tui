@@ -63,23 +63,32 @@ func Status(root string) ([]FileStatus, error) {
 	if err != nil {
 		return nil, err
 	}
+	files := ParseStatusOutput(string(out))
+	for i, f := range files {
+		if !f.IsUntracked() {
+			files[i].Added, files[i].Deleted = numstat(root, f.Path)
+		}
+	}
+	return files, nil
+}
 
+// ParseStatusOutput parses `git status --porcelain` output into FileStatus
+// entries without performing any additional git commands. Added/Deleted are
+// always 0 — callers that want line counts must fill them in separately.
+func ParseStatusOutput(out string) []FileStatus {
 	var files []FileStatus
-	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 		if len(line) < 4 {
 			continue
 		}
 		x, y := line[0], line[1]
 		path := line[3:]
 
-		// Ignored files — skip
 		if x == '!' && y == '!' {
 			continue
 		}
 
 		f := FileStatus{X: x, Y: y}
-
-		// Renames: "old -> new"
 		if strings.Contains(path, " -> ") {
 			parts := strings.SplitN(path, " -> ", 2)
 			f.OldPath = parts[0]
@@ -87,15 +96,9 @@ func Status(root string) ([]FileStatus, error) {
 		} else {
 			f.Path = path
 		}
-
-		// Diff numstat for tracked files
-		if !f.IsUntracked() {
-			f.Added, f.Deleted = numstat(root, f.Path)
-		}
-
 		files = append(files, f)
 	}
-	return files, nil
+	return files
 }
 
 func numstat(root, path string) (int, int) {
@@ -131,17 +134,22 @@ func AllFiles(root string) ([]string, error) {
 		return nil, err
 	}
 	out2, _ := exec.Command("git", "-C", root, "ls-files", "--others", "--exclude-standard").Output()
+	return ParseFilesOutput(string(out1), string(out2)), nil
+}
 
+// ParseFilesOutput merges the outputs of `git ls-files` and
+// `git ls-files --others --exclude-standard`, deduplicating entries.
+func ParseFilesOutput(tracked, untracked string) []string {
 	seen := make(map[string]bool)
 	var files []string
-	combined := strings.TrimRight(string(out1)+string(out2), "\n")
+	combined := strings.TrimRight(tracked+untracked, "\n")
 	for _, line := range strings.Split(combined, "\n") {
 		if line != "" && !seen[line] {
 			seen[line] = true
 			files = append(files, line)
 		}
 	}
-	return files, nil
+	return files
 }
 
 // Diff returns the unified diff for a single repo-relative path,
