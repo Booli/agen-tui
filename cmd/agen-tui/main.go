@@ -5,6 +5,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/pimrutgers/agen-tui/internal/backend"
 )
 
 func main() {
@@ -15,7 +16,7 @@ func main() {
 		dir = cwd
 	}
 
-	p := tea.NewProgram(initialModel(dir), tea.WithAltScreen())
+	p := tea.NewProgram(initialModel(dir, backend.LocalBackend{}), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

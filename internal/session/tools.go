@@ -2,8 +2,10 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,8 +60,17 @@ func RecentTools(path string, limit int) ([]ToolCall, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return RecentToolsReader(f, limit)
+}
 
-	scanner := bufio.NewScanner(f)
+// RecentToolsBytes parses tool calls from raw JSONL bytes.
+func RecentToolsBytes(data []byte, limit int) ([]ToolCall, error) {
+	return RecentToolsReader(bytes.NewReader(data), limit)
+}
+
+// RecentToolsReader parses tool calls from a reader.
+func RecentToolsReader(r io.Reader, limit int) ([]ToolCall, error) {
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 4*1024*1024), 4*1024*1024)
 
 	type pendingResult struct {

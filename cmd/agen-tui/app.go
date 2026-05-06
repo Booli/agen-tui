@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/pimrutgers/agen-tui/internal/backend"
 	"github.com/pimrutgers/agen-tui/internal/session"
 	"github.com/pimrutgers/agen-tui/internal/theme"
 )
@@ -30,7 +31,8 @@ func (m model) chromeRows() int {
 }
 
 type model struct {
-	dir string
+	dir     string
+	backend backend.Backend
 
 	// snapshot data
 	repoRoot string
@@ -56,20 +58,21 @@ type model struct {
 	gitHeight int
 }
 
-func initialModel(dir string) model {
+func initialModel(dir string, b backend.Backend) model {
 	return model{
-		dir:   dir,
-		flat:  newFlatView(),
-		tree:  newTreeView(),
-		tools: newToolsView(),
+		dir:     dir,
+		backend: b,
+		flat:    newFlatView(),
+		tree:    newTreeView(),
+		tools:   newToolsView(),
 	}
 }
 
 func (m model) Init() tea.Cmd {
 	return tea.Batch(
-		doRefresh(m.dir),
+		doRefresh(m.dir, m.backend),
 		gitTick(),
-		doSessionRefresh(m.dir),
+		doSessionRefresh(m.dir, m.backend),
 		sessionTick(),
 	)
 }
@@ -90,7 +93,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "r":
-			return m, doRefresh(m.dir)
+			return m, doRefresh(m.dir, m.backend)
 		case "t", "tab":
 			if m.fileDetail == nil && !m.tools.HasOverlay() {
 				m.mode = (m.mode + 1) % 3
@@ -135,21 +138,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		bodyH := m.bodyHeight()
 		d := newFileDetailView(msg.path, msg.untracked, m.width, bodyH)
 		m.fileDetail = &d
+		return m, doFileDiff(m.repoRoot, msg.path, msg.untracked, m.backend)
 
 	case openFileViewMsg:
 		bodyH := m.bodyHeight()
 		d := newFileViewDetail(msg.path, m.width, bodyH)
 		m.fileDetail = &d
+		return m, doFileRead(m.repoRoot, msg.path, m.backend)
+
+	case openInPaneMsg:
+		return m, runInPane(msg.repoRoot, msg.relPath, m.backend)
 
 	case closeOverlayMsg:
 		m.fileDetail = nil
 		m.tools = m.tools.CloseOverlay()
 
 	case gitTickMsg:
-		return m, tea.Batch(doRefresh(m.dir), gitTick())
+		return m, tea.Batch(doRefresh(m.dir, m.backend), gitTick())
 
 	case sessionTickMsg:
-		return m, tea.Batch(doSessionRefresh(m.dir), sessionTick())
+		return m, tea.Batch(doSessionRefresh(m.dir, m.backend), sessionTick())
 	}
 	return m, nil
 }

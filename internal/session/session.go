@@ -2,7 +2,9 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,11 +122,21 @@ func Parse(path string) (Stats, error) {
 		return Stats{}, err
 	}
 	defer f.Close()
-
-	var s Stats
+	s, err := ParseReader(f)
 	s.SessionID = strings.TrimSuffix(filepath.Base(path), ".jsonl")
+	return s, err
+}
 
-	scanner := bufio.NewScanner(f)
+// ParseBytes parses session stats from raw JSONL bytes.
+func ParseBytes(data []byte) (Stats, error) {
+	return ParseReader(bytes.NewReader(data))
+}
+
+// ParseReader parses session stats from a reader.
+func ParseReader(r io.Reader) (Stats, error) {
+	var s Stats
+
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 2*1024*1024), 2*1024*1024)
 
 	for scanner.Scan() {
