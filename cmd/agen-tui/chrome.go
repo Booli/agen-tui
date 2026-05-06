@@ -4,13 +4,32 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/pimrutgers/agen-tui/internal/theme"
 )
 
-// header returns the repo-name + branch line at the top of the git pane.
-func headerLine(repoRoot, branch string) string {
+// headerWithTabs renders the repo+branch on the left and the three
+// mode tabs right-aligned. The active tab is highlighted in cyan.
+func headerWithTabs(repoRoot, branch string, mode viewMode, width int) string {
 	name := filepath.Base(repoRoot)
-	return theme.Bold.Render(" "+name) + "  " + theme.Muted.Render("("+branch+")")
+	left := " " + theme.Bold.Render(name) + "  " + theme.Muted.Render("("+branch+")")
+
+	labels := []string{"flat", "tree", "tools"}
+	parts := make([]string, len(labels))
+	for i, label := range labels {
+		if viewMode(i) == mode {
+			parts[i] = theme.Cyan.Bold(true).Render(label)
+		} else {
+			parts[i] = theme.Muted.Render(label)
+		}
+	}
+	right := strings.Join(parts, theme.Muted.Render("  "))
+
+	pad := width - lipgloss.Width(left) - lipgloss.Width(right)
+	if pad < 2 {
+		pad = 2
+	}
+	return left + strings.Repeat(" ", pad) + right
 }
 
 // divider returns a full-width muted horizontal rule.

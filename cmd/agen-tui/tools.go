@@ -290,9 +290,11 @@ type toolDetailView struct {
 	tool session.ToolCall
 	vp   viewport.Model
 	keys struct {
-		Close key.Binding
-		Up    key.Binding
-		Down  key.Binding
+		Close  key.Binding
+		Up     key.Binding
+		Down   key.Binding
+		Top    key.Binding
+		Bottom key.Binding
 	}
 }
 
@@ -301,6 +303,8 @@ func newToolDetailView(t session.ToolCall, width, height int) toolDetailView {
 	d.keys.Close = key.NewBinding(key.WithKeys("esc", "enter", " "))
 	d.keys.Up = key.NewBinding(key.WithKeys("k", "up"))
 	d.keys.Down = key.NewBinding(key.WithKeys("j", "down"))
+	d.keys.Top = key.NewBinding(key.WithKeys("g", "home"))
+	d.keys.Bottom = key.NewBinding(key.WithKeys("G", "end"))
 	d.vp = viewport.New(width, height)
 	d.vp.SetContent(d.body(width))
 	return d
@@ -324,6 +328,12 @@ func (d *toolDetailView) Update(msg tea.Msg) (*toolDetailView, tea.Cmd) {
 			return d, nil
 		case key.Matches(k, d.keys.Down):
 			d.vp.LineDown(1)
+			return d, nil
+		case key.Matches(k, d.keys.Top):
+			d.vp.GotoTop()
+			return d, nil
+		case key.Matches(k, d.keys.Bottom):
+			d.vp.GotoBottom()
 			return d, nil
 		}
 	}

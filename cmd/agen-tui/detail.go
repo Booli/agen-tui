@@ -107,7 +107,7 @@ func detailReadLike(path string, t session.ToolCall, w int, label func(string) s
 }
 
 func detailBash(cmd, desc string, t session.ToolCall, w int, label func(string) string) []string {
-	out := []string{}
+	var out []string
 	if desc != "" {
 		out = append(out, " "+theme.Muted.Render("desc")+"  "+desc)
 	}
@@ -137,7 +137,7 @@ func detailGrep(input map[string]json.RawMessage, t session.ToolCall, w int, lab
 func detailAgent(desc, subagent, prompt string, t session.ToolCall, w int, label func(string) string) []string {
 	out := []string{
 		" " + theme.Muted.Render("agent") + "  " + subagent,
-		" " + theme.Muted.Render("desc")  + "  " + desc,
+		" " + theme.Muted.Render("desc") + "  " + desc,
 		label("prompt"),
 	}
 	for _, line := range ui.NumberedHead(strings.Split(prompt, "\n"), 8, w-5) {
@@ -302,4 +302,3 @@ func cleanResultText(s string) string {
 	}
 	return s
 }
-

@@ -25,9 +25,11 @@ type fileDetailView struct {
 	width     int
 	height    int
 	keys      struct {
-		Close key.Binding
-		Up    key.Binding
-		Down  key.Binding
+		Close  key.Binding
+		Up     key.Binding
+		Down   key.Binding
+		Top    key.Binding
+		Bottom key.Binding
 	}
 }
 
@@ -42,23 +44,16 @@ func newFileDetailView(path string, untracked bool, width, height int) fileDetai
 	v.keys.Close = key.NewBinding(key.WithKeys("esc", "enter", " "))
 	v.keys.Up = key.NewBinding(key.WithKeys("k", "up"))
 	v.keys.Down = key.NewBinding(key.WithKeys("j", "down"))
+	v.keys.Top = key.NewBinding(key.WithKeys("g", "home"))
+	v.keys.Bottom = key.NewBinding(key.WithKeys("G", "end"))
 	v.vp = viewport.New(width, height)
 	v.vp.SetContent(v.body())
 	return v
 }
 
 func newFileViewDetail(path string, width, height int) fileDetailView {
-	v := fileDetailView{
-		path:    path,
-		isView:  true,
-		loading: true,
-		width:   width,
-		height:  height,
-	}
-	v.keys.Close = key.NewBinding(key.WithKeys("esc", "enter", " "))
-	v.keys.Up = key.NewBinding(key.WithKeys("k", "up"))
-	v.keys.Down = key.NewBinding(key.WithKeys("j", "down"))
-	v.vp = viewport.New(width, height)
+	v := newFileDetailView(path, false, width, height)
+	v.isView = true
 	v.vp.SetContent(v.body())
 	return v
 }
@@ -107,6 +102,12 @@ func (v fileDetailView) Update(msg tea.Msg) (fileDetailView, tea.Cmd, bool) {
 		case key.Matches(k, v.keys.Down):
 			v.vp.LineDown(1)
 			return v, nil, true
+		case key.Matches(k, v.keys.Top):
+			v.vp.GotoTop()
+			return v, nil, true
+		case key.Matches(k, v.keys.Bottom):
+			v.vp.GotoBottom()
+			return v, nil, true
 		}
 	}
 	var cmd tea.Cmd
@@ -133,7 +134,7 @@ func (v fileDetailView) body() string {
 		case v.err != nil:
 			body = append(body, theme.Untracked.Render(" "+v.err.Error()))
 		default:
-			body = append(body, strings.Split(v.content, "\n")...)
+			body = append(body, ui.NumberedLines(strings.Split(v.content, "\n"))...)
 		}
 		return strings.Join(body, "\n")
 	}

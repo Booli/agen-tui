@@ -91,9 +91,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "r":
 			return m, doRefresh(m.dir)
-		case "t", "tab", "g":
+		case "t", "tab":
 			if m.fileDetail == nil && !m.tools.HasOverlay() {
 				m.mode = (m.mode + 1) % 3
+				m = m.relayout()
+			}
+			return m, nil
+		case "shift+tab":
+			if m.fileDetail == nil && !m.tools.HasOverlay() {
+				m.mode = (m.mode + 2) % 3
 				m = m.relayout()
 			}
 			return m, nil
@@ -199,7 +205,7 @@ func (m model) viewGit() string {
 	}
 
 	var lines []string
-	lines = append(lines, headerLine(m.repoRoot, m.branch))
+	lines = append(lines, headerWithTabs(m.repoRoot, m.branch, m.mode, m.width))
 	lines = append(lines, divider(m.width))
 
 	if m.fileDetail != nil {
@@ -238,15 +244,11 @@ func (m model) viewGit() string {
 func (m model) modeFooter() string {
 	switch m.mode {
 	case modeFlat:
-		return " " + theme.Cyan.Render("flat") + "  " +
-			theme.Muted.Render("g/t:tree  ⏎:diff  o:edit  q:quit")
+		return theme.Muted.Render(" ⏎:diff  o:edit  q:quit")
 	case modeTree:
-		return " " + theme.Cyan.Render("tree") + "  " +
-			theme.Muted.Render("g/t:tools  ⏎:view  o:edit  q:quit")
+		return theme.Muted.Render(" ⏎:view  o:edit  q:quit")
 	case modeTools:
-		return " " + theme.Cyan.Render("tools") + " " +
-			theme.Muted.Render("["+m.tools.FilterLabel()+"]  ") +
-			theme.Muted.Render("g/t:flat f:filter ⏎:detail q:quit")
+		return " " + theme.Muted.Render("["+m.tools.FilterLabel()+"]  f:filter  ⏎:detail  q:quit")
 	}
 	return ""
 }

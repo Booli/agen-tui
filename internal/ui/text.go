@@ -77,6 +77,23 @@ func Itoa(i int) string {
 	return string(buf[n:])
 }
 
+// NumberedLines prefixes every line with a right-aligned line number and
+// a gutter separator. Gutter width adapts to the total line count.
+// Lines are not wrapped — callers must not pass ANSI-escaped content
+// through WrapLines first, as ANSI bytes would break the column count.
+func NumberedLines(lines []string) []string {
+	gutterW := len(Itoa(len(lines)))
+	if gutterW < 3 {
+		gutterW = 3
+	}
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		num := theme.Muted.Render(PadLeft(Itoa(i+1), gutterW))
+		out[i] = " " + num + "│ " + line
+	}
+	return out
+}
+
 // NumberedHead returns the first n lines prefixed with right-aligned
 // line numbers (in muted style), wrapping each line to width. When
 // lines exceeds n, a muted "… N more lines" trailer is appended.
