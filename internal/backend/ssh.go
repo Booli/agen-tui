@@ -9,6 +9,12 @@ import (
 	"github.com/pimrutgers/agen-tui/internal/git"
 )
 
+// shellQuote wraps s in single quotes safe for POSIX sh interpolation.
+// Embedded single quotes are escaped as '\''.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // SSHBackend runs every operation on a remote host via SSH.
 // With SSH ControlMaster configured, each call reuses the existing socket
 // from the user's active SSH session — no passwords or new handshakes.
@@ -28,7 +34,7 @@ func NewSSHBackend(host string) SSHBackend {
 }
 
 func (b SSHBackend) Root(dir string) string {
-	out, err := b.run(fmt.Sprintf("git -C %q rev-parse --show-toplevel 2>/dev/null", dir))
+	out, err := b.run(fmt.Sprintf("git -C %s rev-parse --show-toplevel 2>/dev/null", shellQuote(dir)))
 	if err != nil {
 		return ""
 	}
@@ -36,7 +42,8 @@ func (b SSHBackend) Root(dir string) string {
 }
 
 func (b SSHBackend) Branch(root string) string {
-	out, err := b.run(fmt.Sprintf("git -C %q symbolic-ref --short HEAD 2>/dev/null || git -C %q rev-parse --short HEAD 2>/dev/null", root, root))
+	q := shellQuote(root)
+	out, err := b.run(fmt.Sprintf("git -C %s symbolic-ref --short HEAD 2>/dev/null || git -C %s rev-parse --short HEAD 2>/dev/null", q, q))
 	if err != nil {
 		return "unknown"
 	}
@@ -44,7 +51,7 @@ func (b SSHBackend) Branch(root string) string {
 }
 
 func (b SSHBackend) Status(root string) ([]git.FileStatus, error) {
-	out, err := b.run(fmt.Sprintf("git -C %q status --porcelain 2>/dev/null", root))
+	out, err := b.run(fmt.Sprintf("git -C %s status --porcelain 2>/dev/null", shellQuote(root)))
 	if err != nil {
 		return nil, err
 	}
@@ -54,27 +61,30 @@ func (b SSHBackend) Status(root string) ([]git.FileStatus, error) {
 }
 
 func (b SSHBackend) AllFiles(root string) ([]string, error) {
-	tracked, err := b.run(fmt.Sprintf("git -C %q ls-files 2>/dev/null", root))
+	q := shellQuote(root)
+	tracked, err := b.run(fmt.Sprintf("git -C %s ls-files 2>/dev/null", q))
 	if err != nil {
 		return nil, err
 	}
-	untracked, _ := b.run(fmt.Sprintf("git -C %q ls-files --others --exclude-standard 2>/dev/null", root))
+	untracked, _ := b.run(fmt.Sprintf("git -C %s ls-files --others --exclude-standard 2>/dev/null", q))
 	return git.ParseFilesOutput(string(tracked), string(untracked)), nil
 }
 
 func (b SSHBackend) Diff(root, filePath string, untracked bool) (string, error) {
 	var cmd string
 	if untracked {
-		cmd = fmt.Sprintf("cat %q", path.Join(root, filePath))
+		cmd = fmt.Sprintf("cat %s", shellQuote(path.Join(root, filePath)))
 	} else {
-		cmd = fmt.Sprintf("git -C %q diff HEAD --no-color -- %q 2>/dev/null || git -C %q diff --cached --no-color -- %q 2>/dev/null", root, filePath, root, filePath)
+		qr := shellQuote(root)
+		qf := shellQuote(filePath)
+		cmd = fmt.Sprintf("git -C %s diff HEAD --no-color -- %s 2>/dev/null || git -C %s diff --cached --no-color -- %s 2>/dev/null", qr, qf, qr, qf)
 	}
 	out, err := b.run(cmd)
 	return string(out), err
 }
 
 func (b SSHBackend) ReadFile(absPath string) ([]byte, error) {
-	return b.run(fmt.Sprintf("cat %q", absPath))
+	return b.run(fmt.Sprintf("cat %s", shellQuote(absPath)))
 }
 
 func (b SSHBackend) EditTarget(repoRoot, relPath string) string {
@@ -84,53 +94,34 @@ func (b SSHBackend) EditTarget(repoRoot, relPath string) string {
 }
 
 // ActiveSessionFile returns the most recently modified JSONL path for cwd on
-// the remote. The returned string is a remote absolute path; ReadSessionBytes
-// will fetch it with ssh cat.
+// the remote. The shell expands ~ before ls runs, so the returned path is
+// already absolute; ReadSessionBytes fetches it with ssh cat.
 func (b SSHBackend) ActiveSessionFile(cwd string) string {
 	slug := strings.ReplaceAll(cwd, "/", "-")
-	dir := fmt.Sprintf("~/.claude/projects/%s", slug)
-	out, err := b.run(fmt.Sprintf("ls -t %s/*.jsonl 2>/dev/null | head -1", dir))
+	out, err := b.run(fmt.Sprintf("ls -t ~/.claude/projects/%s/*.jsonl 2>/dev/null | head -1", shellQuote(slug)))
 	if err != nil {
 		return ""
 	}
-	p := strings.TrimSpace(string(out))
-	if p == "" {
-		return ""
-	}
-	// Expand the leading ~ to an absolute path so ReadSessionBytes can use it.
-	out2, err := b.run(fmt.Sprintf("echo %s", p))
-	if err != nil {
-		return p
-	}
-	return strings.TrimSpace(string(out2))
+	return strings.TrimSpace(string(out))
 }
 
 // ProjectSessionFiles returns all JSONL paths for cwd's project on the remote.
 func (b SSHBackend) ProjectSessionFiles(cwd string) []string {
 	slug := strings.ReplaceAll(cwd, "/", "-")
-	dir := fmt.Sprintf("~/.claude/projects/%s", slug)
-	out, err := b.run(fmt.Sprintf("ls %s/*.jsonl 2>/dev/null", dir))
+	out, err := b.run(fmt.Sprintf("ls ~/.claude/projects/%s/*.jsonl 2>/dev/null", shellQuote(slug)))
 	if err != nil {
 		return nil
 	}
-	// Expand tildes via realpath or echo
 	var paths []string
 	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+		if line != "" {
+			paths = append(paths, line)
 		}
-		if strings.HasPrefix(line, "~") {
-			exp, err := b.run(fmt.Sprintf("echo %s", line))
-			if err == nil {
-				line = strings.TrimSpace(string(exp))
-			}
-		}
-		paths = append(paths, line)
 	}
 	return paths
 }
 
 func (b SSHBackend) ReadSessionBytes(remotePath string) ([]byte, error) {
-	return b.run(fmt.Sprintf("cat %q", remotePath))
+	return b.run(fmt.Sprintf("cat %s", shellQuote(remotePath)))
 }

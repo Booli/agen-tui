@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -184,15 +185,15 @@ func runInPane(repoRoot, relPath string, b backend.Backend) tea.Cmd {
 			return nil
 		}
 		target := b.EditTarget(repoRoot, relPath)
+		// scp:// URLs are vim-specific; fall back to vim regardless of $EDITOR.
 		editor := os.Getenv("EDITOR")
-		if editor == "" {
+		if editor == "" || strings.HasPrefix(target, "scp://") {
 			editor = "vim"
 		}
-		shell := fmt.Sprintf("%s %q", editor, target)
 		_ = exec.Command("tmux", "split-window", "-v",
 			"-t", "{left-of}",
 			"-c", repoRoot,
-			shell).Run()
+			editor, target).Run()
 		return nil
 	}
 }
