@@ -51,6 +51,22 @@ Run from a git repo:
 agen-tui
 ```
 
+Or point it at a directory:
+
+```
+agen-tui /path/to/repo
+```
+
+### Remote (SSH)
+
+Drive a repo on another machine while the TUI runs locally:
+
+```
+agen-tui user@host:/abs/path/to/repo
+```
+
+Git status, file tree, and Claude session JSONL are read over SSH on every refresh. Opening a file (`o`) splits a tmux pane on the local host that edits the remote file in place via vim's `scp://` protocol — no sync, no checkout. Best paired with an SSH `ControlMaster` so each call reuses the existing connection.
+
 Cycle views with `g`, `t`, or `Tab`: `flat` -> `tree` -> `tools`.
 
 ## Tmux integration
@@ -102,8 +118,9 @@ Tools:
 ## Layout
 
 ```
-cmd/agen-tui/    bubbletea views (flat, tree, tools, file detail, tool detail)
-internal/git/    porcelain status + diff helpers
+cmd/agen-tui/        bubbletea views (flat, tree, tools, file detail, tool detail)
+internal/backend/    Backend interface; LocalBackend (filesystem) + SSHBackend (ssh)
+internal/git/        porcelain status + diff helpers
 internal/filetree/   file tree builder
 internal/session/    JSONL parser, ToolCall, FilterMode
 internal/ui/         text wrap, line diff, unified diff render
