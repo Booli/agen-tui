@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/pimrutgers/agen-tui/internal/filetree"
+	"github.com/pimrutgers/agen-tui/internal/fuzzy"
 	"github.com/pimrutgers/agen-tui/internal/theme"
 )
 
@@ -43,6 +44,13 @@ type treeView struct {
 	height   int
 	repoRoot string
 	keys     treeKeyMap
+
+	// fuzzy search state. When query != "" the view switches from a
+	// tree to a flat ranked list of matching files (preserves the
+	// repo-wide search story without trying to maintain a partial tree).
+	searching bool
+	query     string
+	matches   []*filetree.Node
 }
 
 func newTreeView() treeView {
@@ -51,6 +59,9 @@ func newTreeView() treeView {
 		keys:     newTreeKeys(),
 	}
 }
+
+func (v treeView) Searching() bool   { return v.searching }
+func (v treeView) SearchQuery() string { return v.query }
 
 // SetData refreshes the tree from a new filetree root. On the first
 // load (when expanded is empty), top-level dirs and ancestors of any
@@ -68,10 +79,22 @@ func (v treeView) SetData(root *filetree.Node, repoRoot string) treeView {
 		expandTouchedAncestors(root, v.expanded)
 	}
 	v.visible = buildVisible(v.root, v.expanded)
-	if v.cursor >= len(v.visible) {
-		v.cursor = max0(len(v.visible) - 1)
+	if v.query != "" {
+		v.matches = fuzzyMatchTree(v.root, v.query)
+	}
+	if v.cursor >= v.rowCount() {
+		v.cursor = max0(v.rowCount() - 1)
 	}
 	return v.clamp()
+}
+
+// rowCount is the number of selectable rows in the current display
+// mode (tree or flat-search).
+func (v treeView) rowCount() int {
+	if v.query != "" {
+		return len(v.matches)
+	}
+	return len(v.visible)
 }
 
 func (v treeView) SetSize(width, height int) treeView {
@@ -82,6 +105,14 @@ func (v treeView) SetSize(width, height int) treeView {
 
 func (v treeView) Update(msg tea.Msg) (treeView, tea.Cmd) {
 	if k, ok := msg.(tea.KeyMsg); ok {
+		if v.searching {
+			return v.updateSearching(k), nil
+		}
+		switch k.String() {
+		case "/":
+			v.searching = true
+			return v, nil
+		}
 		switch {
 		case key.Matches(k, v.keys.Up):
 			if v.cursor > 0 {
@@ -89,37 +120,120 @@ func (v treeView) Update(msg tea.Msg) (treeView, tea.Cmd) {
 				v = v.clamp()
 			}
 		case key.Matches(k, v.keys.Down):
-			if v.cursor < len(v.visible)-1 {
+			if v.cursor < v.rowCount()-1 {
 				v.cursor++
 				v = v.clamp()
 			}
 		case key.Matches(k, v.keys.Toggle):
-			if v.cursor < len(v.visible) {
-				n := v.visible[v.cursor].node
-				if n.IsDir {
-					v.expanded[n.Path] = !v.expanded[n.Path]
-					v.visible = buildVisible(v.root, v.expanded)
-					v = v.clamp()
-				} else {
-					return v, openFileView(n.Path, v.repoRoot)
-				}
+			n := v.cursorNode()
+			if n == nil {
+				return v, nil
+			}
+			if n.IsDir {
+				v.expanded[n.Path] = !v.expanded[n.Path]
+				v.visible = buildVisible(v.root, v.expanded)
+				v = v.clamp()
+			} else {
+				return v, openFileView(n.Path, v.repoRoot)
 			}
 		case key.Matches(k, v.keys.Edit):
-			if v.cursor < len(v.visible) {
-				n := v.visible[v.cursor].node
-				if !n.IsDir {
-					return v, openInPane(v.repoRoot, n.Path)
-				}
+			n := v.cursorNode()
+			if n != nil && !n.IsDir {
+				return v, openInPane(v.repoRoot, n.Path)
 			}
 		}
 	}
 	return v, nil
 }
 
+// cursorNode returns the file/dir under the cursor in either display mode.
+func (v treeView) cursorNode() *filetree.Node {
+	if v.query != "" {
+		if v.cursor < 0 || v.cursor >= len(v.matches) {
+			return nil
+		}
+		return v.matches[v.cursor]
+	}
+	if v.cursor < 0 || v.cursor >= len(v.visible) {
+		return nil
+	}
+	return v.visible[v.cursor].node
+}
+
+// updateSearching captures keys while the / input is active.
+func (v treeView) updateSearching(k tea.KeyMsg) treeView {
+	switch k.String() {
+	case "esc":
+		v.searching = false
+		v.query = ""
+		v.matches = nil
+		v.cursor = 0
+		v.offset = 0
+		return v.clamp()
+	case "enter":
+		v.searching = false
+		return v
+	case "backspace":
+		if r := []rune(v.query); len(r) > 0 {
+			v.query = string(r[:len(r)-1])
+			if v.query == "" {
+				v.matches = nil
+			} else {
+				v.matches = fuzzyMatchTree(v.root, v.query)
+			}
+			v.cursor = 0
+			v.offset = 0
+			return v.clamp()
+		}
+		return v
+	}
+	if len(k.Runes) == 1 {
+		v.query += string(k.Runes)
+		v.matches = fuzzyMatchTree(v.root, v.query)
+		v.cursor = 0
+		v.offset = 0
+		return v.clamp()
+	}
+	return v
+}
+
+// fuzzyMatchTree flattens every file leaf and ranks them against query.
+// Directories are never search results — the user is looking for a file.
+func fuzzyMatchTree(root *filetree.Node, query string) []*filetree.Node {
+	if root == nil {
+		return nil
+	}
+	var leaves []*filetree.Node
+	var walk func(*filetree.Node)
+	walk = func(n *filetree.Node) {
+		for _, c := range n.Children {
+			if c.IsDir {
+				walk(c)
+			} else {
+				leaves = append(leaves, c)
+			}
+		}
+	}
+	walk(root)
+	ranked := fuzzy.Filter(query, leaves, func(n *filetree.Node) string { return n.Path })
+	out := make([]*filetree.Node, len(ranked))
+	for i, r := range ranked {
+		out[i] = r.Item
+	}
+	return out
+}
+
 func (v treeView) clamp() treeView {
 	avail := v.height
 	if avail < 1 {
 		avail = 1
+	}
+	rows := v.rowCount()
+	if v.cursor < 0 {
+		v.cursor = 0
+	}
+	if v.cursor >= rows {
+		v.cursor = max0(rows - 1)
 	}
 	if v.cursor < v.offset {
 		v.offset = v.cursor
@@ -136,15 +250,40 @@ func (v treeView) clamp() treeView {
 func (v treeView) View() string {
 	var lines []string
 
-	avail := v.height
+	if v.searching || v.query != "" {
+		caret := ""
+		if v.searching {
+			caret = theme.Cyan.Render("│")
+		}
+		prompt := " " + theme.Cyan.Bold(true).Render("/") + v.query + caret
+		lines = append(lines, prompt)
+	}
+
+	if v.query != "" {
+		if len(v.matches) == 0 {
+			lines = append(lines, theme.Muted.Render("  no files match "+theme.Cyan.Render("/"+v.query)))
+		}
+		avail := v.height - len(lines)
+		if avail < 1 {
+			avail = 1
+		}
+		end := v.offset + avail
+		if end > len(v.matches) {
+			end = len(v.matches)
+		}
+		for i := v.offset; i < end; i++ {
+			lines = append(lines, v.renderMatchLine(v.matches[i], i == v.cursor))
+		}
+		return strings.Join(lines, "\n")
+	}
+
+	avail := v.height - len(lines)
 	if avail < 1 {
 		avail = 1
 	}
-
 	if len(v.visible) == 0 {
 		lines = append(lines, theme.Muted.Render("  clean"))
 	}
-
 	end := v.offset + avail
 	if end > len(v.visible) {
 		end = len(v.visible)
@@ -153,6 +292,46 @@ func (v treeView) View() string {
 		lines = append(lines, v.renderLine(item, v.offset+i == v.cursor))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// renderMatchLine renders a flat-search result row: full path, no indent.
+func (v treeView) renderMatchLine(n *filetree.Node, selected bool) string {
+	cursor := " "
+	if selected {
+		cursor = theme.Cyan.Render("❯")
+	}
+	sym := n.Symbol()
+	var style lipgloss.Style
+	switch sym {
+	case "?":
+		style = theme.Untracked
+	case "M":
+		style = theme.Modified
+	case "A":
+		style = theme.Staged
+	case "D":
+		style = theme.Deleted
+	case "!":
+		style = theme.Conflict
+	case "R":
+		style = theme.Renamed
+	default:
+		style = lipgloss.NewStyle()
+	}
+	prefix := cursor + "  "
+	maxPath := v.width - len(prefix) - 2
+	if maxPath < 8 {
+		maxPath = 8
+	}
+	path := n.Path
+	if len(path) > maxPath {
+		path = "…" + path[len(path)-maxPath+1:]
+	}
+	line := prefix + style.Render(path)
+	if sym != "" {
+		line += " " + style.Render(sym)
+	}
+	return line
 }
 
 func (v treeView) renderLine(item visItem, selected bool) string {

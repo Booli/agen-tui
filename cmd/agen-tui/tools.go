@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/pimrutgers/agen-tui/internal/fuzzy"
 	"github.com/pimrutgers/agen-tui/internal/session"
 	"github.com/pimrutgers/agen-tui/internal/theme"
 	"github.com/pimrutgers/agen-tui/internal/ui"
@@ -41,9 +42,18 @@ type toolsView struct {
 	offset   int
 	anchor   string // tool_use id under cursor — preserved across refreshes
 	detail   *toolDetailView
-	width    int
-	height   int
-	keys     toolsKeyMap
+
+	// fuzzy search state. Active when searching == true; the input
+	// captures keys, and rebuildFilter applies fuzzy.Filter on top of
+	// the existing FilterMode (category) filter. matchIdx maps a row
+	// index in `filtered` → match positions for highlighting.
+	searching bool
+	query     string
+	matchIdx  map[string][]int // tool_use ID → matched rune positions in summary
+
+	width  int
+	height int
+	keys   toolsKeyMap
 }
 
 func newToolsView() toolsView {
@@ -78,6 +88,16 @@ func (v toolsView) Update(msg tea.Msg) (toolsView, tea.Cmd) {
 	}
 
 	if k, ok := msg.(tea.KeyMsg); ok {
+		// Search-input mode swallows printable keys; only esc/enter/backspace
+		// have special meaning.
+		if v.searching {
+			return v.updateSearching(k)
+		}
+		switch k.String() {
+		case "/":
+			v.searching = true
+			return v, nil
+		}
 		switch {
 		case key.Matches(k, v.keys.Up):
 			if v.cursor > 0 {
@@ -102,6 +122,40 @@ func (v toolsView) Update(msg tea.Msg) (toolsView, tea.Cmd) {
 	return v, nil
 }
 
+// updateSearching captures keys while the / input field is active.
+// enter commits the query (exits search mode but keeps the filter), esc
+// clears query and exits, backspace pops a rune. Any other printable
+// key extends the query and re-runs the fuzzy filter.
+func (v toolsView) updateSearching(k tea.KeyMsg) (toolsView, tea.Cmd) {
+	switch k.String() {
+	case "esc":
+		v.searching = false
+		v.query = ""
+		return v.rebuildFilter(), nil
+	case "enter":
+		v.searching = false
+		return v, nil
+	case "backspace":
+		if r := []rune(v.query); len(r) > 0 {
+			v.query = string(r[:len(r)-1])
+			return v.rebuildFilter(), nil
+		}
+		return v, nil
+	}
+	if len(k.Runes) == 1 {
+		v.query += string(k.Runes)
+		return v.rebuildFilter(), nil
+	}
+	return v, nil
+}
+
+// Searching reports whether the / input field is currently active.
+// The parent uses this to suppress global hotkeys while typing.
+func (v toolsView) Searching() bool { return v.searching }
+
+// SearchQuery returns the current fuzzy query (for footer display).
+func (v toolsView) SearchQuery() string { return v.query }
+
 func (v toolsView) rebuildFilter() toolsView {
 	out := make([]session.ToolCall, 0, len(v.tools))
 	for i := len(v.tools) - 1; i >= 0; i-- {
@@ -109,6 +163,37 @@ func (v toolsView) rebuildFilter() toolsView {
 		if v.filter.Keep(t) {
 			out = append(out, t)
 		}
+	}
+
+	// Layer the fuzzy query on top of the category filter. Empty query
+	// is a no-op and leaves order intact (chronological reverse).
+	v.matchIdx = nil
+	if v.query != "" {
+		ranked := fuzzy.Filter(v.query, out, func(t session.ToolCall) string {
+			// Search across name + summary so "edit app.go" matches an
+			// Edit tool call on app.go.
+			return t.Name + " " + t.Summary
+		})
+		out = make([]session.ToolCall, len(ranked))
+		idx := make(map[string][]int, len(ranked))
+		for i, r := range ranked {
+			out[i] = r.Item
+			// Indexes are positions in (Name + " " + Summary); shift to
+			// summary-only by subtracting len(Name)+1 when applicable.
+			if r.Indexes != nil {
+				offset := len([]rune(r.Item.Name)) + 1
+				summaryIdx := make([]int, 0, len(r.Indexes))
+				for _, p := range r.Indexes {
+					if p >= offset {
+						summaryIdx = append(summaryIdx, p-offset)
+					}
+				}
+				if len(summaryIdx) > 0 {
+					idx[r.Item.ID] = summaryIdx
+				}
+			}
+		}
+		v.matchIdx = idx
 	}
 	v.filtered = out
 
@@ -158,15 +243,28 @@ func (v toolsView) View() string {
 
 	var lines []string
 
+	// Search prompt at the top when active or when a query is held.
+	if v.searching || v.query != "" {
+		caret := ""
+		if v.searching {
+			caret = theme.Cyan.Render("│")
+		}
+		prompt := " " + theme.Cyan.Bold(true).Render("/") + v.query + caret
+		lines = append(lines, prompt)
+	}
+
 	if len(v.filtered) == 0 {
 		hint := "  no tool calls yet"
-		if len(v.tools) > 0 {
+		switch {
+		case v.query != "":
+			hint = "  no tool calls match " + theme.Cyan.Render("/"+v.query)
+		case len(v.tools) > 0:
 			hint = "  filter hides all calls (press f)"
 		}
 		lines = append(lines, theme.Muted.Render(hint))
 	}
 
-	avail := v.height
+	avail := v.height - len(lines)
 	if avail < 1 {
 		avail = 1
 	}
@@ -287,11 +385,34 @@ func (v toolsView) renderRow(t session.ToolCall, selected bool) string {
 		theme.Muted.Render(ts) + " " +
 		iconStyle.Render(icon) + " " +
 		nameStyled + " " +
-		summaryStyle.Render(summary)
+		highlightMatches(summary, v.matchIdx[t.ID], summaryStyle)
 	if tag != "" {
 		line += " " + tagStyled
 	}
 	return line
+}
+
+// highlightMatches renders s with rune-positions in idx styled in
+// bold-cyan and the rest in base. idx may include positions beyond
+// the (truncated) length of s; those are silently dropped.
+func highlightMatches(s string, idx []int, base lipgloss.Style) string {
+	if len(idx) == 0 {
+		return base.Render(s)
+	}
+	hit := make(map[int]bool, len(idx))
+	for _, i := range idx {
+		hit[i] = true
+	}
+	hl := theme.Cyan.Bold(true).Underline(true)
+	var b strings.Builder
+	for i, r := range s {
+		if hit[i] {
+			b.WriteString(hl.Render(string(r)))
+		} else {
+			b.WriteString(base.Render(string(r)))
+		}
+	}
+	return b.String()
 }
 
 // ── tool detail overlay ─────────────────────────────────────────────────────

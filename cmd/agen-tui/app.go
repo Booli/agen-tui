@@ -138,9 +138,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.relayout()
 
 	case tea.KeyMsg:
-		// While the tunnels-add input is open, swallow all keys into the
-		// view so digits and letters don't trigger global hotkeys.
+		// While any sub-view input is active (tunnels add, tools /search),
+		// swallow all keys into the view so digits/letters don't trigger
+		// global hotkeys like 1-4 or q.
 		if m.mode == modeTunnels && m.tunnelsView.Adding() {
+			return m.routeKey(msg)
+		}
+		if m.mode == modeTools && m.tools.Searching() {
+			return m.routeKey(msg)
+		}
+		if m.mode == modeFlat && m.flat.Searching() {
+			return m.routeKey(msg)
+		}
+		if m.mode == modeTree && m.tree.Searching() {
 			return m.routeKey(msg)
 		}
 		switch msg.String() {
@@ -454,11 +464,32 @@ func (m model) viewGit() string {
 func (m model) modeFooter() string {
 	switch m.mode {
 	case modeFlat:
-		return theme.Muted.Render(" ⏎:diff  o:edit  1-4:view  q:quit")
+		if m.flat.Searching() {
+			return theme.Muted.Render(" enter:keep  esc:clear")
+		}
+		hint := " ⏎:diff  o:edit  /:search  1-4:view  q:quit"
+		if m.flat.SearchQuery() != "" {
+			hint = " [/" + m.flat.SearchQuery() + "] " + hint
+		}
+		return theme.Muted.Render(hint)
 	case modeTree:
-		return theme.Muted.Render(" ⏎:view  o:edit  1-4:view  q:quit")
+		if m.tree.Searching() {
+			return theme.Muted.Render(" enter:keep  esc:clear")
+		}
+		hint := " ⏎:view  o:edit  /:search  1-4:view  q:quit"
+		if m.tree.SearchQuery() != "" {
+			hint = " [/" + m.tree.SearchQuery() + "] " + hint
+		}
+		return theme.Muted.Render(hint)
 	case modeTools:
-		return " " + theme.Muted.Render("["+m.tools.FilterLabel()+"]  f:filter  ⏎:detail  1-4:view  q:quit")
+		if m.tools.Searching() {
+			return theme.Muted.Render(" enter:keep  esc:clear")
+		}
+		hint := "["+m.tools.FilterLabel()+"]  f:filter  /:search  ⏎:detail  1-4:view  q:quit"
+		if m.tools.SearchQuery() != "" {
+			hint = "[/" + m.tools.SearchQuery() + "]  " + hint
+		}
+		return " " + theme.Muted.Render(hint)
 	case modeTunnels:
 		if m.tunnelsView.Adding() {
 			return theme.Muted.Render(" enter:confirm  esc:cancel")
