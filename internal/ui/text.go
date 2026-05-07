@@ -7,11 +7,15 @@ package ui
 import (
 	"strings"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/pimrutgers/agen-tui/internal/theme"
 )
 
-// WrapLines hard-wraps each line in s to width display columns (assuming
-// 1 column per rune). Empty input lines are preserved as empty entries.
+// WrapLines hard-wraps each line in s to width display columns. Uses
+// ansi.Hardwrap so ANSI escape sequences (e.g. from chroma syntax
+// highlighting) survive the wrap intact instead of getting cut in the
+// middle and bleeding visible escape fragments. Empty input lines are
+// preserved as empty entries.
 func WrapLines(s string, width int) []string {
 	if width < 4 {
 		width = 4
@@ -22,12 +26,11 @@ func WrapLines(s string, width int) []string {
 			out = append(out, "")
 			continue
 		}
-		rs := []rune(line)
-		for len(rs) > width {
-			out = append(out, string(rs[:width]))
-			rs = rs[width:]
-		}
-		out = append(out, string(rs))
+		// preserveSpace=true keeps spaces at the start of wrapped lines —
+		// matches the behavior of the previous rune-based wrapper, where
+		// every char survived the wrap.
+		wrapped := ansi.Hardwrap(line, width, true)
+		out = append(out, strings.Split(wrapped, "\n")...)
 	}
 	return out
 }
