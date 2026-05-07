@@ -104,6 +104,12 @@ func (v flatView) Update(msg tea.Msg) (flatView, tea.Cmd) {
 		case "/":
 			v.searching = true
 			return v, nil
+		case "esc":
+			if v.query != "" {
+				v.query = ""
+				v = v.rebuildFilter()
+				return v.clamp(), nil
+			}
 		}
 		switch {
 		case key.Matches(k, v.keys.Up):
@@ -142,6 +148,20 @@ func (v flatView) updateSearching(k tea.KeyMsg) flatView {
 	case "enter":
 		v.searching = false
 		return v
+	case "down", "up", "pgdown", "pgup":
+		// Commit search and dive into the filtered list immediately.
+		v.searching = false
+		switch k.String() {
+		case "down":
+			if v.cursor < len(v.filtered)-1 {
+				v.cursor++
+			}
+		case "up":
+			if v.cursor > 0 {
+				v.cursor--
+			}
+		}
+		return v.clamp()
 	case "backspace":
 		if r := []rune(v.query); len(r) > 0 {
 			v.query = string(r[:len(r)-1])

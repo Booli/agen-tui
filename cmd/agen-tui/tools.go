@@ -97,6 +97,12 @@ func (v toolsView) Update(msg tea.Msg) (toolsView, tea.Cmd) {
 		case "/":
 			v.searching = true
 			return v, nil
+		case "esc":
+			// Clear a held query when not in search input mode.
+			if v.query != "" {
+				v.query = ""
+				return v.rebuildFilter(), nil
+			}
 		}
 		switch {
 		case key.Matches(k, v.keys.Up):
@@ -123,9 +129,10 @@ func (v toolsView) Update(msg tea.Msg) (toolsView, tea.Cmd) {
 }
 
 // updateSearching captures keys while the / input field is active.
-// enter commits the query (exits search mode but keeps the filter), esc
-// clears query and exits, backspace pops a rune. Any other printable
-// key extends the query and re-runs the fuzzy filter.
+// enter commits the query (exits search mode but keeps the filter),
+// esc clears query and exits, backspace pops a rune. Arrow keys
+// commit the query and forward to navigation so the user can dive
+// into the filtered list without an extra keystroke.
 func (v toolsView) updateSearching(k tea.KeyMsg) (toolsView, tea.Cmd) {
 	switch k.String() {
 	case "esc":
@@ -135,6 +142,10 @@ func (v toolsView) updateSearching(k tea.KeyMsg) (toolsView, tea.Cmd) {
 	case "enter":
 		v.searching = false
 		return v, nil
+	case "down", "up", "pgdown", "pgup":
+		// Commit the query and route the key into the normal nav path.
+		v.searching = false
+		return v.Update(k)
 	case "backspace":
 		if r := []rune(v.query); len(r) > 0 {
 			v.query = string(r[:len(r)-1])

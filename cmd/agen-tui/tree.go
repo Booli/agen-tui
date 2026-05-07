@@ -112,6 +112,14 @@ func (v treeView) Update(msg tea.Msg) (treeView, tea.Cmd) {
 		case "/":
 			v.searching = true
 			return v, nil
+		case "esc":
+			if v.query != "" {
+				v.query = ""
+				v.matches = nil
+				v.cursor = 0
+				v.offset = 0
+				return v.clamp(), nil
+			}
 		}
 		switch {
 		case key.Matches(k, v.keys.Up):
@@ -173,6 +181,19 @@ func (v treeView) updateSearching(k tea.KeyMsg) treeView {
 	case "enter":
 		v.searching = false
 		return v
+	case "down", "up", "pgdown", "pgup":
+		v.searching = false
+		switch k.String() {
+		case "down":
+			if v.cursor < v.rowCount()-1 {
+				v.cursor++
+			}
+		case "up":
+			if v.cursor > 0 {
+				v.cursor--
+			}
+		}
+		return v.clamp()
 	case "backspace":
 		if r := []rune(v.query); len(r) > 0 {
 			v.query = string(r[:len(r)-1])
