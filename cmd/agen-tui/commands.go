@@ -12,6 +12,7 @@ import (
 	"github.com/pimrutgers/agen-tui/internal/filetree"
 	"github.com/pimrutgers/agen-tui/internal/git"
 	"github.com/pimrutgers/agen-tui/internal/session"
+	"github.com/pimrutgers/agen-tui/internal/tunnel"
 	"github.com/pimrutgers/agen-tui/internal/ui"
 )
 
@@ -80,6 +81,8 @@ type closeOverlayMsg struct{}
 
 type allTimeTickMsg time.Time
 type gitTickMsg time.Time
+type tunnelTickMsg time.Time
+type tunnelProbedMsg struct{}
 
 // openFileViewMsg asks the parent to switch into a syntax-highlighted
 // file-view overlay (not diff). The model's Update handler fetches content.
@@ -265,6 +268,50 @@ func sessionReconnect(delay time.Duration) tea.Cmd {
 	return tea.Tick(delay, func(time.Time) tea.Msg {
 		return sessionReconnectMsg{}
 	})
+}
+
+func tunnelTick() tea.Cmd {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+		return tunnelTickMsg(t)
+	})
+}
+
+// toggleTunnels starts every tunnel that isn't already running, or
+// stops them all if every one is running. Mirrors the press-T-to-flip
+// UX: one key, predictable result regardless of count.
+func toggleTunnels(tunnels []*tunnel.Tunnel) {
+	if len(tunnels) == 0 {
+		return
+	}
+	allRunning := true
+	for _, t := range tunnels {
+		s, _ := t.Snapshot()
+		if s != tunnel.StatusUp && s != tunnel.StatusStarting {
+			allRunning = false
+			break
+		}
+	}
+	for _, t := range tunnels {
+		if allRunning {
+			t.Stop()
+		} else {
+			t.Start()
+		}
+	}
+}
+
+// doTunnelProbe dials each tunnel's local port to refresh its status.
+// Cheap (250ms timeout per tunnel) and runs off the UI goroutine.
+func doTunnelProbe(tunnels []*tunnel.Tunnel) tea.Cmd {
+	if len(tunnels) == 0 {
+		return nil
+	}
+	return func() tea.Msg {
+		for _, t := range tunnels {
+			t.Probe()
+		}
+		return tunnelProbedMsg{}
+	}
 }
 
 // sessionIDFromPath extracts the session ID (UUID) from a JSONL file path.

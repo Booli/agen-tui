@@ -9,6 +9,7 @@ import (
 	"github.com/pimrutgers/agen-tui/internal/backend"
 	"github.com/pimrutgers/agen-tui/internal/session"
 	"github.com/pimrutgers/agen-tui/internal/theme"
+	"github.com/pimrutgers/agen-tui/internal/tunnel"
 )
 
 // cachedSession lets the all-time refresh skip files whose size hasn't
@@ -41,6 +42,7 @@ func (m model) chromeRows() int {
 type model struct {
 	dir     string
 	backend backend.Backend
+	tunnels []*tunnel.Tunnel
 
 	// snapshot data
 	repoRoot string
@@ -77,10 +79,11 @@ type model struct {
 	gitHeight int
 }
 
-func initialModel(dir string, b backend.Backend) model {
+func initialModel(dir string, b backend.Backend, tunnels []*tunnel.Tunnel) model {
 	return model{
 		dir:     dir,
 		backend: b,
+		tunnels: tunnels,
 		flat:    newFlatView(),
 		tree:    newTreeView(),
 		tools:   newToolsView(),
@@ -88,13 +91,17 @@ func initialModel(dir string, b backend.Backend) model {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		doRefresh(m.dir, m.backend),
 		gitTick(),
 		startSessionStream(m.dir, m.backend),
 		doAllTimeRefresh(m.dir, m.backend, m.allTimeCache),
 		allTimeTick(),
-	)
+	}
+	if len(m.tunnels) > 0 {
+		cmds = append(cmds, doTunnelProbe(m.tunnels), tunnelTick())
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -117,6 +124,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "r":
 			return m, doRefresh(m.dir, m.backend)
+		case "T":
+			toggleTunnels(m.tunnels)
+			return m, doTunnelProbe(m.tunnels)
 		case "t", "tab":
 			if m.fileDetail == nil && !m.tools.HasOverlay() {
 				m.mode = (m.mode + 1) % 3
@@ -237,6 +247,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case allTimeTickMsg:
 		return m, tea.Batch(doAllTimeRefresh(m.dir, m.backend, m.allTimeCache), allTimeTick())
+
+	case tunnelTickMsg:
+		return m, tea.Batch(doTunnelProbe(m.tunnels), tunnelTick())
+
+	case tunnelProbedMsg:
+		// Snapshot read happens in View(); this msg just triggers a render.
+		return m, nil
 	}
 	return m, nil
 }

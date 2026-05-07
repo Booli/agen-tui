@@ -6,13 +6,14 @@ import (
 	"time"
 
 	"github.com/pimrutgers/agen-tui/internal/theme"
+	"github.com/pimrutgers/agen-tui/internal/tunnel"
 )
 
 // viewSession renders the bottom Claude session strip (4 fixed rows):
 // label divider, model + duration + turns, tokens + cache + cost,
 // project totals.
 func (m model) viewSession() string {
-	div := labelDivider(m.width, "claude")
+	div := labelDividerRight(m.width, "claude", tunnelStatusRight(m.tunnels))
 
 	if m.sessionErr != nil {
 		return div + "\n" +
@@ -58,6 +59,33 @@ func fmtDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm", int(d.Minutes()))
 	}
 	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
+// tunnelStatusRight renders a compact "5137↑ 8080…" fragment for the
+// claude divider. Returns "" when there are no tunnels so the divider
+// renders without a right segment.
+func tunnelStatusRight(tunnels []*tunnel.Tunnel) string {
+	if len(tunnels) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(tunnels))
+	for _, t := range tunnels {
+		s, _ := t.Snapshot()
+		port := fmt.Sprintf("%d", t.Spec.LocalPort)
+		switch s {
+		case tunnel.StatusUp:
+			parts = append(parts, theme.Staged.Render(port+"↑"))
+		case tunnel.StatusStarting:
+			parts = append(parts, theme.Muted.Render(port+"…"))
+		case tunnel.StatusPortBusy:
+			parts = append(parts, theme.Untracked.Render(port+"!busy"))
+		case tunnel.StatusError:
+			parts = append(parts, theme.Untracked.Render(port+"✗"))
+		default:
+			parts = append(parts, theme.Muted.Render(port+"·"))
+		}
+	}
+	return theme.Muted.Render("tunnel ") + strings.Join(parts, " ")
 }
 
 func fmtK(n int64) string {
