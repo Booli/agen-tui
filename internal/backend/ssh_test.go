@@ -100,12 +100,72 @@ func TestSSHBackendAllFiles(t *testing.T) {
 	}
 }
 
-func TestSSHBackendEditTarget(t *testing.T) {
+func TestSSHBackendEditPaneCmd(t *testing.T) {
 	b := SSHBackend{host: "user@10.0.0.1"}
-	got := b.EditTarget("/home/user/project", "src/main.go")
-	want := "scp://user@10.0.0.1//home/user/project/src/main.go"
-	if got != want {
-		t.Errorf("EditTarget = %q, want %q", got, want)
+	cwd, cmd := b.EditPaneCmd("/home/user/project", "src/main.go")
+	if cwd != "" {
+		t.Errorf("cwd = %q, want empty for SSH", cwd)
+	}
+	want := `ssh -t user@10.0.0.1 'vim '\''/home/user/project/src/main.go'\'''`
+	if cmd != want {
+		t.Errorf("cmd = %q, want %q", cmd, want)
+	}
+}
+
+func TestSSHBackendSnapshot(t *testing.T) {
+	// Build a remote response that splits cleanly on the sentinel.
+	sep := snapshotSentinel
+	out := "/repo" + sep +
+		"main" + sep +
+		" M foo.go\n?? bar.go\n" + sep +
+		"foo.go\nbaz.go\n" + sep +
+		"bar.go\n"
+	b := SSHBackend{host: "h", run: func(cmd string) ([]byte, error) {
+		return []byte(out), nil
+	}}
+	snap, err := b.Snapshot("/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Root != "/repo" || snap.Branch != "main" {
+		t.Errorf("Snapshot Root/Branch = %q/%q", snap.Root, snap.Branch)
+	}
+	if len(snap.Status) != 2 {
+		t.Errorf("len(Status) = %d, want 2", len(snap.Status))
+	}
+	if len(snap.AllFiles) != 3 {
+		t.Errorf("len(AllFiles) = %d, want 3 (tracked+untracked combined)", len(snap.AllFiles))
+	}
+}
+
+func TestSSHBackendSnapshotEmptyOnNonRepo(t *testing.T) {
+	// Remote script exits early when not a repo — empty stdout.
+	b := SSHBackend{host: "h", run: func(cmd string) ([]byte, error) {
+		return []byte(""), nil
+	}}
+	snap, err := b.Snapshot("/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Root != "" {
+		t.Errorf("expected empty Snapshot, got %+v", snap)
+	}
+}
+
+func TestSSHBackendProjectSessionFilesInfo(t *testing.T) {
+	out := "1024 /home/u/.claude/projects/x/aaa.jsonl\n2048 /home/u/.claude/projects/x/bbb.jsonl\n"
+	b := SSHBackend{host: "h", run: func(cmd string) ([]byte, error) {
+		return []byte(out), nil
+	}}
+	infos := b.ProjectSessionFilesInfo("/some/cwd")
+	if len(infos) != 2 {
+		t.Fatalf("len(infos) = %d, want 2", len(infos))
+	}
+	if infos[0].Size != 1024 || infos[1].Size != 2048 {
+		t.Errorf("sizes = %d/%d, want 1024/2048", infos[0].Size, infos[1].Size)
+	}
+	if infos[0].Path != "/home/u/.claude/projects/x/aaa.jsonl" {
+		t.Errorf("path[0] = %q", infos[0].Path)
 	}
 }
 

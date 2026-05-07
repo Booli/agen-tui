@@ -2,6 +2,7 @@ package main
 
 import (
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -9,6 +10,13 @@ import (
 	"github.com/pimrutgers/agen-tui/internal/session"
 	"github.com/pimrutgers/agen-tui/internal/theme"
 )
+
+// cachedSession lets the all-time refresh skip files whose size hasn't
+// changed since the last scan (JSONL is append-only, so size == content key).
+type cachedSession struct {
+	size  int64
+	stats session.Stats
+}
 
 type viewMode int
 
@@ -44,6 +52,17 @@ type model struct {
 	allTime      session.Stats
 	sessionErr   error
 
+	// active-session tail streaming
+	sessionParser    *session.Parser
+	sessionStreamCh  <-chan []byte
+	sessionStreamEnd func()
+	sessionPath      string
+	sessionRetry     time.Duration
+
+	// all-time totals cache: path → {size, stats}. Avoids re-reading
+	// project JSONLs whose size hasn't changed since the last scan.
+	allTimeCache map[string]cachedSession
+
 	// sub-views
 	flat  flatView
 	tree  treeView
@@ -72,8 +91,9 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		doRefresh(m.dir, m.backend),
 		gitTick(),
-		doSessionRefresh(m.dir, m.backend),
-		sessionTick(),
+		startSessionStream(m.dir, m.backend),
+		doAllTimeRefresh(m.dir, m.backend, m.allTimeCache),
+		allTimeTick(),
 	)
 }
 
@@ -91,6 +111,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
+			if m.sessionStreamEnd != nil {
+				m.sessionStreamEnd()
+			}
 			return m, tea.Quit
 		case "r":
 			return m, doRefresh(m.dir, m.backend)
@@ -116,11 +139,67 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flat = m.flat.SetData(msg.files, msg.repoRoot)
 		m.tree = m.tree.SetData(msg.treeRoot, msg.repoRoot)
 
-	case sessionMsg:
-		m.sessionStats = msg.current
+	case sessionStreamMsg:
+		if msg.err != nil {
+			m.sessionErr = msg.err
+			// Schedule a reconnect attempt — the file may not exist yet.
+			return m, sessionReconnect(m.bumpRetry())
+		}
+		m.sessionStreamCh = msg.ch
+		m.sessionStreamEnd = msg.cancel
+		m.sessionPath = m.backend.ActiveSessionFile(m.dir)
+		m.sessionParser = session.NewParser()
+		m.sessionParser.Stats.SessionID = msg.sessionID
+		m.sessionStats = m.sessionParser.Stats
+		m.sessionErr = nil
+		m.sessionRetry = 0 // healthy stream — reset backoff
+		return m, waitForSessionChunk(msg.ch)
+
+	case sessionChunkMsg:
+		// Discard chunks from a rotated/cancelled stream — they'd corrupt
+		// the freshly-started parser otherwise.
+		if msg.ch != m.sessionStreamCh || m.sessionParser == nil {
+			return m, nil
+		}
+		m.sessionParser.Append(msg.chunk)
+		m.sessionStats = m.sessionParser.Stats
+		m.tools = m.tools.SetData(m.sessionParser.RecentTools(500))
+		return m, waitForSessionChunk(m.sessionStreamCh)
+
+	case sessionStreamEndMsg:
+		// Only clear if the message corresponds to the *current* stream;
+		// a stale end-msg from a just-cancelled rotated stream must not
+		// clobber the freshly-started one.
+		if msg.ch != m.sessionStreamCh {
+			return m, nil
+		}
+		m.sessionStreamCh = nil
+		m.sessionStreamEnd = nil
+		// Auto-reconnect with exponential backoff (capped at 30s).
+		return m, sessionReconnect(m.bumpRetry())
+
+	case sessionReconnectMsg:
+		if m.sessionStreamCh != nil {
+			return m, nil // already reconnected via rotation path
+		}
+		return m, startSessionStream(m.dir, m.backend)
+
+	case allTimeMsg:
 		m.allTime = msg.allTime
-		m.sessionErr = msg.err
-		m.tools = m.tools.SetData(msg.tools)
+		m.allTimeCache = msg.cache
+		// If the active session rotated, kill old stream and start fresh.
+		if msg.activePath != "" && msg.activePath != m.sessionPath {
+			if m.sessionStreamEnd != nil {
+				m.sessionStreamEnd()
+				m.sessionStreamEnd = nil
+				m.sessionStreamCh = nil
+			}
+			return m, startSessionStream(m.dir, m.backend)
+		}
+		// If we never had a stream (initial failure), try again.
+		if m.sessionStreamCh == nil && msg.activePath != "" {
+			return m, startSessionStream(m.dir, m.backend)
+		}
 
 	case fileDiffMsg:
 		if m.fileDetail != nil {
@@ -156,10 +235,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case gitTickMsg:
 		return m, tea.Batch(doRefresh(m.dir, m.backend), gitTick())
 
-	case sessionTickMsg:
-		return m, tea.Batch(doSessionRefresh(m.dir, m.backend), sessionTick())
+	case allTimeTickMsg:
+		return m, tea.Batch(doAllTimeRefresh(m.dir, m.backend, m.allTimeCache), allTimeTick())
 	}
 	return m, nil
+}
+
+// bumpRetry returns the next reconnect delay using exponential backoff
+// (1s → 2s → 4s … capped at 30s) and stores it on the model.
+func (m *model) bumpRetry() time.Duration {
+	switch {
+	case m.sessionRetry == 0:
+		m.sessionRetry = time.Second
+	case m.sessionRetry < 30*time.Second:
+		m.sessionRetry *= 2
+		if m.sessionRetry > 30*time.Second {
+			m.sessionRetry = 30 * time.Second
+		}
+	}
+	return m.sessionRetry
 }
 
 func (m model) bodyHeight() int {

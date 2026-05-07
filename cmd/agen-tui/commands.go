@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -26,11 +25,40 @@ type refreshMsg struct {
 	err      error
 }
 
-type sessionMsg struct {
-	current session.Stats
-	allTime session.Stats
-	tools   []session.ToolCall
-	err     error
+// sessionStreamMsg is emitted once a tail -F has been opened on the active
+// JSONL file. The model stores cancel for cleanup and starts pulling chunks.
+type sessionStreamMsg struct {
+	ch        <-chan []byte
+	cancel    func()
+	sessionID string
+	err       error
+}
+
+// sessionChunkMsg carries a chunk of bytes from the active session tail,
+// tagged with its source channel so a stale chunk from a just-rotated
+// stream can be discarded instead of corrupting the new parser.
+type sessionChunkMsg struct {
+	ch    <-chan []byte
+	chunk []byte
+}
+
+// sessionStreamEndMsg signals the tail has closed (process exited or EOF).
+// ch identifies which stream ended, so a stale message from a rotated stream
+// doesn't clobber the new stream's state.
+type sessionStreamEndMsg struct{ ch <-chan []byte }
+
+// sessionReconnectMsg is fired after a backoff delay; the model uses it to
+// retry startSessionStream when the previous attempt failed or the stream
+// dropped (e.g., ssh connection blip, no JSONL file yet on a fresh repo).
+type sessionReconnectMsg struct{}
+
+// allTimeMsg carries the slow-cadence project-wide totals plus the current
+// active path (so the model can detect rotation and restart the stream),
+// and the refreshed file-size cache so the next scan can skip unchanged files.
+type allTimeMsg struct {
+	allTime    session.Stats
+	activePath string
+	cache      map[string]cachedSession
 }
 
 type fileDiffMsg struct {
@@ -50,7 +78,7 @@ type openFileDetailMsg struct {
 // closeOverlayMsg asks the parent to dismiss any active overlay.
 type closeOverlayMsg struct{}
 
-type sessionTickMsg time.Time
+type allTimeTickMsg time.Time
 type gitTickMsg time.Time
 
 // openFileViewMsg asks the parent to switch into a syntax-highlighted
@@ -76,64 +104,89 @@ type openInPaneMsg struct {
 
 func doRefresh(dir string, b backend.Backend) tea.Cmd {
 	return func() tea.Msg {
-		root := b.Root(dir)
-		if root == "" {
-			return refreshMsg{err: fmt.Errorf("not a git repo")}
+		snap, err := b.Snapshot(dir)
+		if err != nil || snap.Root == "" {
+			if err == nil {
+				err = fmt.Errorf("not a git repo")
+			}
+			return refreshMsg{err: err}
 		}
-		branch := b.Branch(root)
-		files, _ := b.Status(root)
-
-		statusMap := make(map[string]string)
-		for _, f := range files {
+		statusMap := make(map[string]string, len(snap.Status))
+		for _, f := range snap.Status {
 			statusMap[f.Path] = string([]byte{f.X, f.Y})
 		}
-
-		allFiles, err := b.AllFiles(root)
-		var treeRoot *filetree.Node
-		if err == nil {
-			treeRoot = filetree.Build(allFiles, statusMap)
-		}
-
+		treeRoot := filetree.Build(snap.AllFiles, statusMap)
 		return refreshMsg{
-			repoRoot: root,
-			branch:   branch,
-			files:    files,
+			repoRoot: snap.Root,
+			branch:   snap.Branch,
+			files:    snap.Status,
 			treeRoot: treeRoot,
 		}
 	}
 }
 
-func doSessionRefresh(dir string, b backend.Backend) tea.Cmd {
+// startSessionStream resolves the active JSONL path and opens a tail -F on it.
+// The returned msg carries the chunk channel + cancel so the model can drain
+// and clean up.
+func startSessionStream(dir string, b backend.Backend) tea.Cmd {
 	return func() tea.Msg {
 		activePath := b.ActiveSessionFile(dir)
 		if activePath == "" {
-			return sessionMsg{err: fmt.Errorf("no session file")}
+			return sessionStreamMsg{err: fmt.Errorf("no session file")}
 		}
-		data, err := b.ReadSessionBytes(activePath)
+		ch, cancel, err := b.StreamSessionBytes(activePath)
 		if err != nil {
-			return sessionMsg{err: err}
+			return sessionStreamMsg{err: err}
 		}
-		current, err := session.ParseBytes(data)
-		current.SessionID = sessionIDFromPath(activePath)
-		if err != nil {
-			return sessionMsg{err: err}
-		}
-		tools, _ := session.RecentToolsBytes(data, 500)
+		return sessionStreamMsg{ch: ch, cancel: cancel, sessionID: sessionIDFromPath(activePath)}
+	}
+}
 
+// waitForSessionChunk blocks on ch and emits a chunk msg, or sessionStreamEndMsg
+// when the channel closes. The model re-issues this cmd after each chunk.
+func waitForSessionChunk(ch <-chan []byte) tea.Cmd {
+	return func() tea.Msg {
+		chunk, ok := <-ch
+		if !ok {
+			return sessionStreamEndMsg{ch: ch}
+		}
+		return sessionChunkMsg{ch: ch, chunk: chunk}
+	}
+}
+
+// doAllTimeRefresh sums every project JSONL for the lifetime totals. The
+// cache is keyed by path; entries are reused when the file's size is
+// unchanged (JSONL is append-only, so size == fingerprint). Updated cache
+// rides back on the message so the model can swap it in.
+func doAllTimeRefresh(dir string, b backend.Backend, cache map[string]cachedSession) tea.Cmd {
+	return func() tea.Msg {
+		infos := b.ProjectSessionFilesInfo(dir)
+		next := make(map[string]cachedSession, len(infos))
 		var allTime session.Stats
-		for _, f := range b.ProjectSessionFiles(dir) {
-			d, err := b.ReadSessionBytes(f)
+		for _, fi := range infos {
+			if c, ok := cache[fi.Path]; ok && c.size == fi.Size {
+				next[fi.Path] = c
+				allTime = allTime.Add(c.stats)
+				allTime.Sessions++
+				continue
+			}
+			d, err := b.ReadSessionBytes(fi.Path)
 			if err != nil {
 				continue
 			}
 			s, err := session.ParseBytes(d)
-			if err == nil {
-				allTime = allTime.Add(s)
-				allTime.Sessions++
+			if err != nil {
+				continue
 			}
+			next[fi.Path] = cachedSession{size: fi.Size, stats: s}
+			allTime = allTime.Add(s)
+			allTime.Sessions++
 		}
-
-		return sessionMsg{current: current, allTime: allTime, tools: tools}
+		return allTimeMsg{
+			allTime:    allTime,
+			activePath: b.ActiveSessionFile(dir),
+			cache:      next,
+		}
 	}
 }
 
@@ -177,36 +230,40 @@ func openInPane(repoRoot, relPath string) tea.Cmd {
 	return func() tea.Msg { return openInPaneMsg{repoRoot: repoRoot, relPath: relPath} }
 }
 
-// runInPane splits the tmux pane to the left and opens $EDITOR on the
-// backend-resolved path (local abs path or scp://host/... for SSH).
+// runInPane splits the tmux pane and runs the backend's editor command.
+// Local: $EDITOR on the absolute path. SSH: ssh -t host vim '<remote path>'.
 func runInPane(repoRoot, relPath string, b backend.Backend) tea.Cmd {
 	return func() tea.Msg {
 		if os.Getenv("TMUX") == "" {
 			return nil
 		}
-		target := b.EditTarget(repoRoot, relPath)
-		// scp:// URLs are vim-specific; fall back to vim regardless of $EDITOR.
-		editor := os.Getenv("EDITOR")
-		if editor == "" || strings.HasPrefix(target, "scp://") {
-			editor = "vim"
+		cwd, shellCmd := b.EditPaneCmd(repoRoot, relPath)
+		args := []string{"split-window", "-v", "-t", "{left-of}"}
+		if cwd != "" {
+			args = append(args, "-c", cwd)
 		}
-		_ = exec.Command("tmux", "split-window", "-v",
-			"-t", "{left-of}",
-			"-c", repoRoot,
-			editor, target).Run()
+		args = append(args, shellCmd)
+		_ = exec.Command("tmux", args...).Run()
 		return nil
 	}
 }
 
 func gitTick() tea.Cmd {
-	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
 		return gitTickMsg(t)
 	})
 }
 
-func sessionTick() tea.Cmd {
-	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-		return sessionTickMsg(t)
+func allTimeTick() tea.Cmd {
+	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
+		return allTimeTickMsg(t)
+	})
+}
+
+// sessionReconnect schedules a reconnect attempt after delay.
+func sessionReconnect(delay time.Duration) tea.Cmd {
+	return tea.Tick(delay, func(time.Time) tea.Msg {
+		return sessionReconnectMsg{}
 	})
 }
 
