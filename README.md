@@ -1,6 +1,9 @@
 # agen-tui
 
-Tmux sidebar for working alongside Claude Code. Bubble Tea TUI showing git status, file tree, recent tool calls, and the active session's token + cost stats.
+Tmux sidebar for working alongside Claude Code. Bubble Tea TUI showing git
+status, a file tree, recent tool calls, the active session's token + cost
+stats, and a manager for SSH local-forward tunnels — all in a single
+narrow pane.
 
 ## Install
 
@@ -14,7 +17,10 @@ Installs `agen-tui` to `~/.local/bin`.
 
 ### Fresh machine (one-shot)
 
-Downloads the latest release binary, drops in the tmux sidebar script, and binds `prefix + g`. Idempotent. Works on Linux (apt/dnf/pacman) and macOS (brew). Falls back to a source build (Go required) when no release binary matches the platform.
+Downloads the latest release binary, drops in the tmux sidebar script, and
+binds `prefix + g`. Idempotent. Works on Linux (apt/dnf/pacman) and macOS
+(brew). Falls back to a source build (Go required) when no release binary
+matches the platform.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Booli/agen-tui/main/scripts/install.sh | bash
@@ -36,11 +42,13 @@ Make sure `$HOME/.local/bin` is on your `PATH` after.
 
 ### Cutting a release
 
-Push a `v*` tag. The release workflow runs goreleaser and attaches `linux/darwin × amd64/arm64` tarballs to a GitHub Release; the install script picks them up automatically.
+Push a `v*` tag. The release workflow runs goreleaser and attaches
+`linux/darwin × amd64/arm64` tarballs to a GitHub Release; the install
+script picks them up automatically.
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 ## Use
@@ -65,64 +73,109 @@ Drive a repo on another machine while the TUI runs locally:
 agen-tui user@host:/abs/path/to/repo
 ```
 
-Git status, file tree, and Claude session JSONL are read over SSH on every refresh. Opening a file (`o`) splits a tmux pane on the local host that edits the remote file in place via vim's `scp://` protocol — no sync, no checkout. Best paired with an SSH `ControlMaster` so each call reuses the existing connection.
+Git status, file tree, and Claude session JSONL are streamed over SSH.
+Opening a file (`o`) splits a tmux pane that runs `ssh -t host vim '<remote
+path>'` — no checkout, no sync. Best paired with an SSH `ControlMaster` so
+each call reuses one connection.
 
-Cycle views with `g`, `t`, or `Tab`: `flat` -> `tree` -> `tools`.
+### SSH tunnels
+
+You can attach `ssh -L`-style local forwards on the command line:
+
+```
+agen-tui -L 5137 -L 8080:db:5432 user@host:/path
+```
+
+Or manage them interactively from the **tunnels view** (4th tab, always
+reachable via `4`). Press `a` to add a forward, `d` to delete, `space` to
+toggle.
+
+Tunnels live in a per-user **registry** at `~/.config/agen-tui/tunnels.json`
+(mode 0600), so they:
+
+- **Persist** across agen-tui exits — closing the app doesn't kill the
+  tunnel.
+- **Are visible from any agen-tui instance** on the machine — adding `3000`
+  in one terminal shows up in another within a couple seconds.
+- **Are bound by host** — in remote mode the input takes just `PORT`, in
+  local mode `HOST PORT` (e.g. `myserver 3000`).
+
+The status of every tunnel is shown in a strip above the Claude stats:
+`tunnels [host] 5137 ↑ 8080 …`. Stopped tunnels stay in the registry as
+definitions — toggle with `space` to restart with the same spec.
+
+### Fuzzy search
+
+Press `/` in the flat, tree, or tools view to filter live with a fuzzy
+subsequence match (fzf-style: bonuses for start of string, after word
+boundaries, and consecutive matches). Diacritic-insensitive: typing `cafe`
+matches `café`.
+
+- Flat: filters the git-status list by file path.
+- Tree: switches to a flat ranked list of matching files (preserves
+  repo-wide search).
+- Tools: filters tool calls by name + summary, with matched runes
+  highlighted inline.
+
+`enter` keeps the filter and resumes navigation; `esc` clears it.
 
 ## Tmux integration
 
-Bind a toggle to prefix+g (or whatever):
+Bind a toggle to `prefix + g`:
 
+```tmux
+bind g run-shell "~/.tmux/plugins/git-sidebar/scripts/sidebar.sh"
 ```
-bind g run-shell "~/path/to/sidebar.sh"
-```
 
-Sample `sidebar.sh`:
-
-```bash
-#!/usr/bin/env bash
-PANE_TITLE="agen-tui"
-PANE_PATH=$(tmux display-message -p "#{pane_current_path}")
-
-existing=$(tmux list-panes -F "#{pane_id}:#{pane_title}" 2>/dev/null \
-  | grep ":${PANE_TITLE}$" | cut -d: -f1)
-
-if [[ -n "$existing" ]]; then
-  tmux kill-pane -t "$existing"
-  exit 0
-fi
-
-LOG="${TMPDIR:-/tmp}/agen-tui.log"
-tmux split-window -h -l 70 -c "$PANE_PATH" \
-  "tmux select-pane -T '${PANE_TITLE}'; exec '${HOME}/.local/bin/agen-tui' '$PANE_PATH' 2>>'${LOG}' || { echo \"agen-tui exited \$?, see ${LOG}\"; sleep 5; }"
-```
+The sidebar script detects whether the current pane is `ssh`'d and either
+launches agen-tui locally against the current pane's path, or against
+`host:remote-path` when you're inside an SSH session whose remote shell is
+also in tmux. See `scripts/sidebar.sh` in this repo for a reference
+implementation.
 
 ## Keys
 
-Global: `q` quit. `r` refresh. `g`/`t`/`Tab` cycle view.
+Global:
+
+- `1` / `2` / `3` / `4` — jump directly to flat / tree / tools / tunnels.
+- `t` or `Tab` / `Shift+Tab` — cycle views.
+- `q` — quit.
+- `r` — refresh git status.
+- `T` — toggle all tunnels (start every stopped, or stop every up).
 
 Flat / Tree:
 
-- `j`/`k` move
-- `enter` open diff overlay
-- `o` open file in main tmux pane via `$EDITOR`
+- `j` / `k` move
+- `enter` open diff (flat) / file view (tree)
+- `o` open in `$EDITOR` via a split tmux pane
+- `/` fuzzy search
 - `esc` close overlay
 
 Tools:
 
-- `j`/`k` move
+- `j` / `k` move
 - `enter` open call detail
 - `f` cycle filter (files / edits / all). Errors always show.
+- `/` fuzzy search across name + summary
 - `esc` close detail
+
+Tunnels:
+
+- `j` / `k` move
+- `a` add (port / host port)
+- `d` delete
+- `space` / `enter` toggle the selected tunnel
 
 ## Layout
 
 ```
-cmd/agen-tui/        bubbletea views (flat, tree, tools, file detail, tool detail)
+cmd/agen-tui/        bubbletea views (flat, tree, tools, tunnels, file/tool detail, chrome)
 internal/backend/    Backend interface; LocalBackend (filesystem) + SSHBackend (ssh)
 internal/git/        porcelain status + diff helpers
 internal/filetree/   file tree builder
-internal/session/    JSONL parser, ToolCall, FilterMode
+internal/session/    JSONL parser (incremental), ToolCall, FilterMode
+internal/tunnel/     Spec + Registry (~/.config/agen-tui/tunnels.json) + detached spawn/kill
+internal/fuzzy/      hand-rolled subsequence matcher with fzf-style scoring
 internal/ui/         text wrap, line diff, unified diff render
 internal/theme/      lipgloss styles
 ```
@@ -131,13 +184,21 @@ internal/theme/      lipgloss styles
 
 ```
 go test ./...
+go test -race ./...
 ```
 
 ## Dependencies
 
-- `github.com/charmbracelet/bubbletea`
-- `github.com/charmbracelet/bubbles` (key, viewport)
-- `github.com/charmbracelet/lipgloss`
+Direct:
+
+- `github.com/charmbracelet/bubbletea` — TUI event loop and alt-screen
+- `github.com/charmbracelet/bubbles` — key bindings, viewport
+- `github.com/charmbracelet/lipgloss` — styling
+- `github.com/alecthomas/chroma/v2` — syntax highlighting in file view
+- `golang.org/x/text` — Unicode normalization for the fuzzy matcher
+
+The fuzzy matcher's diacritic-folding approach is borrowed from
+[lithammer/fuzzysearch](https://github.com/lithammer/fuzzysearch) (MIT).
 
 ## License
 
