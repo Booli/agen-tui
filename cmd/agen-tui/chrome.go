@@ -8,28 +8,46 @@ import (
 	"github.com/pimrutgers/agen-tui/internal/theme"
 )
 
-// headerWithTabs renders the repo+branch on the left and the three
-// mode tabs right-aligned. The active tab is highlighted in cyan.
-func headerWithTabs(repoRoot, branch string, mode viewMode, width int) string {
+// titleRow renders the repo name + current branch on its own row.
+// Splitting the title from the tabs prevents long repo names from
+// pushing the tab strip off-screen.
+func titleRow(repoRoot, branch string) string {
 	name := filepath.Base(repoRoot)
-	left := " " + theme.Bold.Render(name) + "  " + theme.Muted.Render("("+branch+")")
+	if name == "" || name == "." {
+		name = "—"
+	}
+	if branch == "" {
+		branch = "?"
+	}
+	return " " + theme.Cyan.Bold(true).Render(name) + "  " + theme.Muted.Render("("+branch+")")
+}
 
-	labels := []string{"flat", "tree", "tools"}
-	parts := make([]string, len(labels))
+// tabsDivider merges the tab strip into the body divider so tabs look
+// like notches on a horizontal rule. Active tab is bracketed in ┤ ├
+// and bold cyan; inactive tabs flow with the rule. Right-padded to width.
+func tabsDivider(mode viewMode, width int) string {
+	labels := []string{"1 flat", "2 tree", "3 tools", "4 tunnels"}
+	var sb strings.Builder
+	sb.WriteString(theme.Muted.Render("──"))
 	for i, label := range labels {
+		// Same total width for active/inactive (label + 4 visible cells)
+		// so labels don't shift when the active tab changes.
 		if viewMode(i) == mode {
-			parts[i] = theme.Cyan.Bold(true).Render(label)
+			sb.WriteString(theme.Muted.Render("┤ "))
+			sb.WriteString(theme.Cyan.Bold(true).Render(label))
+			sb.WriteString(theme.Muted.Render(" ├"))
 		} else {
-			parts[i] = theme.Muted.Render(label)
+			sb.WriteString(theme.Muted.Render("─ "))
+			sb.WriteString(theme.Muted.Render(label))
+			sb.WriteString(theme.Muted.Render(" ─"))
 		}
 	}
-	right := strings.Join(parts, theme.Muted.Render("  "))
-
-	pad := width - lipgloss.Width(left) - lipgloss.Width(right)
-	if pad < 2 {
-		pad = 2
+	rendered := sb.String()
+	rest := width - lipgloss.Width(rendered)
+	if rest < 0 {
+		rest = 0
 	}
-	return left + strings.Repeat(" ", pad) + right
+	return rendered + theme.Muted.Render(strings.Repeat("─", rest))
 }
 
 // divider returns a full-width muted horizontal rule.

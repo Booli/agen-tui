@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/pimrutgers/agen-tui/internal/backend"
@@ -50,17 +52,31 @@ func main() {
 		os.Exit(2)
 	}
 
-	var tunnels []*tunnel.Tunnel
+	// Register any -L forwards into the persistent registry so they
+	// survive this process and are visible to other agen-tui instances.
 	for _, spec := range forwards {
-		tunnels = append(tunnels, tunnel.New(host, spec))
-	}
-	defer func() {
-		for _, t := range tunnels {
-			t.Stop()
+		err := tunnel.WithLock(func(r *tunnel.Registry) error {
+			_, e := r.Add(host, spec.String())
+			return e
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %s tunnel %s: %v\n", host, spec, err)
 		}
+	}
+
+	p := tea.NewProgram(initialModel(dir, host, b), tea.WithAltScreen())
+
+	// Forward SIGHUP/SIGTERM to the program so the model can run its
+	// cleanup path (kill the active tail-F ssh, stop tunnels) before
+	// exiting. Without this, tmux kill-pane SIGHUPs us and we leak the
+	// child ssh processes (orphaned with PPID=1).
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		p.Send(shutdownMsg{})
 	}()
 
-	p := tea.NewProgram(initialModel(dir, b, tunnels), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

@@ -9,11 +9,68 @@ import (
 	"github.com/pimrutgers/agen-tui/internal/tunnel"
 )
 
+// viewTunnelStrip renders a single always-visible row above the claude
+// strip listing each tunnel's status, port, and host (host is hidden
+// when every tunnel shares the same one). Empty when no tunnels.
+func (m model) viewTunnelStrip() string {
+	if len(m.tunnels) == 0 {
+		return ""
+	}
+	showHost := false
+	for i, e := range m.tunnels {
+		if i > 0 && e.Host != m.tunnels[0].Host {
+			showHost = true
+			break
+		}
+	}
+	parts := make([]string, 0, len(m.tunnels))
+	for _, e := range m.tunnels {
+		s := tunnel.ProbeStatus(&e)
+		// ProbeStatus needs the spec parsed; rely on registry-stored
+		// spec being canonical, so a fresh ParseSpec succeeds.
+		_, _ = tunnel.ParseSpec(e.Spec)
+		port := portFromSpec(e.Spec)
+		token := port
+		if showHost {
+			token = port + theme.Muted.Render("@"+e.Host)
+		}
+		switch s {
+		case tunnel.StatusUp:
+			parts = append(parts, theme.Staged.Render(token+" ↑"))
+		case tunnel.StatusStarting:
+			parts = append(parts, theme.Muted.Render(token+" …"))
+		case tunnel.StatusPortBusy:
+			parts = append(parts, theme.Untracked.Render(token+" busy"))
+		case tunnel.StatusError:
+			parts = append(parts, theme.Untracked.Render(token+" ✗"))
+		case tunnel.StatusDead:
+			parts = append(parts, theme.Untracked.Render(token+" ✗"))
+		default:
+			parts = append(parts, theme.Muted.Render(token+" ·"))
+		}
+	}
+	hostHint := ""
+	if !showHost {
+		hostHint = theme.Muted.Render("[" + m.tunnels[0].Host + "] ")
+	}
+	label := theme.Muted.Render(" tunnels ")
+	return label + hostHint + strings.Join(parts, theme.Muted.Render("  ")) + "\n"
+}
+
+// portFromSpec extracts the local-port portion of a canonical
+// "LOCAL:RHOST:REMOTE" spec for compact display.
+func portFromSpec(spec string) string {
+	if i := strings.IndexByte(spec, ':'); i > 0 {
+		return spec[:i]
+	}
+	return spec
+}
+
 // viewSession renders the bottom Claude session strip (4 fixed rows):
 // label divider, model + duration + turns, tokens + cache + cost,
 // project totals.
 func (m model) viewSession() string {
-	div := labelDividerRight(m.width, "claude", tunnelStatusRight(m.tunnels))
+	div := labelDivider(m.width, "claude")
 
 	if m.sessionErr != nil {
 		return div + "\n" +
@@ -59,33 +116,6 @@ func fmtDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm", int(d.Minutes()))
 	}
 	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
-}
-
-// tunnelStatusRight renders a compact "5137↑ 8080…" fragment for the
-// claude divider. Returns "" when there are no tunnels so the divider
-// renders without a right segment.
-func tunnelStatusRight(tunnels []*tunnel.Tunnel) string {
-	if len(tunnels) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(tunnels))
-	for _, t := range tunnels {
-		s, _ := t.Snapshot()
-		port := fmt.Sprintf("%d", t.Spec.LocalPort)
-		switch s {
-		case tunnel.StatusUp:
-			parts = append(parts, theme.Staged.Render(port+"↑"))
-		case tunnel.StatusStarting:
-			parts = append(parts, theme.Muted.Render(port+"…"))
-		case tunnel.StatusPortBusy:
-			parts = append(parts, theme.Untracked.Render(port+"!busy"))
-		case tunnel.StatusError:
-			parts = append(parts, theme.Untracked.Render(port+"✗"))
-		default:
-			parts = append(parts, theme.Muted.Render(port+"·"))
-		}
-	}
-	return theme.Muted.Render("tunnel ") + strings.Join(parts, " ")
 }
 
 func fmtK(n int64) string {

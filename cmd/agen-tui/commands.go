@@ -79,10 +79,27 @@ type openFileDetailMsg struct {
 // closeOverlayMsg asks the parent to dismiss any active overlay.
 type closeOverlayMsg struct{}
 
+// shutdownMsg is sent by the SIGHUP/SIGTERM handler. The model runs its
+// quit path (cancelling the active tail-F stream) before tea.Quit so the
+// child ssh process is not orphaned.
+type shutdownMsg struct{}
+
 type allTimeTickMsg time.Time
 type gitTickMsg time.Time
 type tunnelTickMsg time.Time
 type tunnelProbedMsg struct{}
+
+// tunnelMutationMsg are emitted by the tunnels view; the model dispatches
+// them to a tea.Cmd that takes the registry lock and applies the change.
+type addTunnelMsg struct {
+	host string
+	spec string // canonical spec string; ParseSpec runs inside the lock
+}
+type removeTunnelMsg struct{ id string }
+type toggleTunnelMsg struct{ id string }
+
+// tunnelsRefreshedMsg carries the latest registry snapshot.
+type tunnelsRefreshedMsg struct{ entries []tunnel.Entry }
 
 // openFileViewMsg asks the parent to switch into a syntax-highlighted
 // file-view overlay (not diff). The model's Update handler fetches content.
@@ -276,42 +293,103 @@ func tunnelTick() tea.Cmd {
 	})
 }
 
-// toggleTunnels starts every tunnel that isn't already running, or
-// stops them all if every one is running. Mirrors the press-T-to-flip
-// UX: one key, predictable result regardless of count.
-func toggleTunnels(tunnels []*tunnel.Tunnel) {
-	if len(tunnels) == 0 {
-		return
-	}
-	allRunning := true
-	for _, t := range tunnels {
-		s, _ := t.Snapshot()
-		if s != tunnel.StatusUp && s != tunnel.StatusStarting {
-			allRunning = false
-			break
-		}
-	}
-	for _, t := range tunnels {
-		if allRunning {
-			t.Stop()
-		} else {
-			t.Start()
-		}
+// loadTunnels reads the on-disk registry, runs Reconcile to flag entries
+// whose ssh process has died, and emits the snapshot back to the model.
+// Errors are swallowed — UI just shows whatever it last knew.
+func loadTunnels() tea.Cmd {
+	return func() tea.Msg {
+		var snap []tunnel.Entry
+		_ = tunnel.WithLock(func(r *tunnel.Registry) error {
+			r.Reconcile()
+			snap = append([]tunnel.Entry(nil), r.Entries...)
+			return nil
+		})
+		return tunnelsRefreshedMsg{entries: snap}
 	}
 }
 
-// doTunnelProbe dials each tunnel's local port to refresh its status.
-// Cheap (250ms timeout per tunnel) and runs off the UI goroutine.
-func doTunnelProbe(tunnels []*tunnel.Tunnel) tea.Cmd {
-	if len(tunnels) == 0 {
+// addTunnel parses spec, validates host, registers the entry, and spawns
+// ssh — all under the registry lock. Refreshes the UI on completion.
+func addTunnel(host, spec string) tea.Cmd {
+	return func() tea.Msg {
+		_ = tunnel.WithLock(func(r *tunnel.Registry) error {
+			_, err := r.Add(host, spec)
+			return err
+		})
+		return tunnelsRefreshedMsg{entries: snapshotTunnels()}
+	}
+}
+
+func removeTunnel(id string) tea.Cmd {
+	return func() tea.Msg {
+		_ = tunnel.WithLock(func(r *tunnel.Registry) error {
+			return r.Remove(id)
+		})
+		return tunnelsRefreshedMsg{entries: snapshotTunnels()}
+	}
+}
+
+func toggleTunnel(id string) tea.Cmd {
+	return func() tea.Msg {
+		_ = tunnel.WithLock(func(r *tunnel.Registry) error {
+			return r.Toggle(id)
+		})
+		return tunnelsRefreshedMsg{entries: snapshotTunnels()}
+	}
+}
+
+// toggleAllTunnelsCmd starts every stopped/dead tunnel, or stops them
+// all if every one is up. Same UX as the previous "T" hotkey but
+// operates on the registry.
+func toggleAllTunnelsCmd(snapshot []tunnel.Entry) tea.Cmd {
+	return func() tea.Msg {
+		_ = tunnel.WithLock(func(r *tunnel.Registry) error {
+			allUp := true
+			for _, e := range r.Entries {
+				if tunnel.ProbeStatus(&e) != tunnel.StatusUp {
+					allUp = false
+					break
+				}
+			}
+			for i := range r.Entries {
+				e := &r.Entries[i]
+				switch {
+				case allUp && e.Wanted == tunnel.StateUp:
+					_ = r.Toggle(e.ID)
+				case !allUp && e.Wanted == tunnel.StateDown:
+					_ = r.Toggle(e.ID)
+				}
+			}
+			return nil
+		})
+		return tunnelsRefreshedMsg{entries: snapshotTunnels()}
+	}
+}
+
+// snapshotTunnels reads the registry without taking the write lock.
+// Safe because Save uses an atomic rename — Load() always sees a
+// fully-written file (or none at all).
+func snapshotTunnels() []tunnel.Entry {
+	r, err := tunnel.Load()
+	if err != nil {
 		return nil
 	}
-	return func() tea.Msg {
-		for _, t := range tunnels {
-			t.Probe()
-		}
-		return tunnelProbedMsg{}
-	}
+	return r.Entries
+}
+
+// addTunnelCmd / removeTunnelCmd / toggleTunnelCmd: thin emitters used
+// by the tunnels view to bubble user actions up to the model. The
+// model's Update then dispatches to the lock-taking commands above.
+func addTunnelCmd(host, spec string) tea.Cmd {
+	return func() tea.Msg { return addTunnelMsg{host: host, spec: spec} }
+}
+
+func removeTunnelCmd(id string) tea.Cmd {
+	return func() tea.Msg { return removeTunnelMsg{id: id} }
+}
+
+func toggleTunnelCmd(id string) tea.Cmd {
+	return func() tea.Msg { return toggleTunnelMsg{id: id} }
 }
 
 // sessionIDFromPath extracts the session ID (UUID) from a JSONL file path.

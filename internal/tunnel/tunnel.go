@@ -1,28 +1,28 @@
-// Package tunnel manages headless SSH local-forward processes
-// (`ssh -N -L LOCAL:HOST:REMOTE host`). Each Tunnel owns one ssh
-// child process; the TUI starts them at boot, polls Probe on a
-// ticker, and calls Stop on shutdown.
+// Package tunnel manages SSH local-forward processes via a per-user
+// on-disk registry (~/.config/agen-tui/tunnels.json). Tunnels are spawned
+// detached so they outlive the agen-tui instance that created them, and
+// every other agen-tui process on the machine reads the same registry —
+// so a tunnel added in one terminal is visible from any other.
 package tunnel
 
 import (
-	"errors"
 	"fmt"
-	"net"
-	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 )
 
+// Status reports the runtime state of a registry Entry. It's the
+// combination of user intent (Entry.Wanted) and observed state (PID
+// liveness + local-port reachability).
 type Status int
 
 const (
-	StatusStopped Status = iota
-	StatusStarting
-	StatusUp
-	StatusPortBusy
-	StatusError
+	StatusStopped  Status = iota // user-stopped
+	StatusStarting               // pid alive, local port not yet listening
+	StatusUp                     // pid alive, local port listening
+	StatusDead                   // wanted=up but pid missing
+	StatusPortBusy               // could not start: another process held the port
+	StatusError                  // misc failure (see Entry.LastError)
 )
 
 func (s Status) String() string {
@@ -33,6 +33,8 @@ func (s Status) String() string {
 		return "starting"
 	case StatusUp:
 		return "up"
+	case StatusDead:
+		return "dead"
 	case StatusPortBusy:
 		return "port-busy"
 	case StatusError:
@@ -41,8 +43,8 @@ func (s Status) String() string {
 	return "unknown"
 }
 
-// Spec describes a single local forward. Mirrors ssh's -L syntax:
-// LOCAL:REMOTEHOST:REMOTE. RemoteHost defaults to "localhost".
+// Spec describes a single local forward, mirroring ssh's -L syntax
+// (LOCAL:REMOTEHOST:REMOTE).
 type Spec struct {
 	LocalPort  int
 	RemoteHost string
@@ -55,6 +57,12 @@ func (s Spec) String() string {
 
 // ParseSpec accepts either "PORT" (shorthand for PORT:localhost:PORT)
 // or the full "LOCAL:HOST:REMOTE" form.
+//
+// Validation is strict: ports must be 1–65535, the remote host must be
+// non-empty and only contain hostname characters (a–z, 0–9, '.', '-',
+// '_'). The remote host is *embedded* in the -L argument (not a
+// separate argv element), so loose chars there could be parsed by ssh
+// in surprising ways.
 func ParseSpec(s string) (Spec, error) {
 	parts := strings.Split(s, ":")
 	switch len(parts) {
@@ -67,133 +75,34 @@ func ParseSpec(s string) (Spec, error) {
 	case 3:
 		lp, err1 := strconv.Atoi(parts[0])
 		rp, err2 := strconv.Atoi(parts[2])
-		if err1 != nil || err2 != nil || parts[1] == "" {
-			return Spec{}, fmt.Errorf("invalid forward %q (want LOCAL:HOST:REMOTE)", s)
+		if err1 != nil || lp <= 0 || lp > 65535 {
+			return Spec{}, fmt.Errorf("invalid local port %q", parts[0])
 		}
-		return Spec{LocalPort: lp, RemoteHost: parts[1], RemotePort: rp}, nil
+		if err2 != nil || rp <= 0 || rp > 65535 {
+			return Spec{}, fmt.Errorf("invalid remote port %q", parts[2])
+		}
+		rhost := strings.TrimSpace(parts[1])
+		if err := validateRemoteHost(rhost); err != nil {
+			return Spec{}, err
+		}
+		return Spec{LocalPort: lp, RemoteHost: rhost, RemotePort: rp}, nil
 	}
 	return Spec{}, fmt.Errorf("invalid forward %q (use PORT or LOCAL:HOST:REMOTE)", s)
 }
 
-// Tunnel is a single managed `ssh -N -L` process.
-type Tunnel struct {
-	Spec Spec
-	Host string
-
-	mu     sync.Mutex
-	status Status
-	err    error
-	cmd    *exec.Cmd
-}
-
-func New(host string, spec Spec) *Tunnel {
-	return &Tunnel{Host: host, Spec: spec}
-}
-
-// Start spawns ssh -N -L in the background. It first probes the local
-// port: if something else is listening, status becomes StatusPortBusy
-// and no ssh process is started.
-func (t *Tunnel) Start() {
-	t.mu.Lock()
-	if t.status == StatusUp || t.status == StatusStarting {
-		t.mu.Unlock()
-		return
+// validateRemoteHost permits hostname characters only. The remote host
+// is embedded in the -L argument string, not a separate argv element,
+// so we keep it conservative (no whitespace, no shell-meta).
+func validateRemoteHost(h string) error {
+	if h == "" {
+		return fmt.Errorf("remote host is empty")
 	}
-
-	addr := fmt.Sprintf("127.0.0.1:%d", t.Spec.LocalPort)
-	if ln, err := net.Listen("tcp", addr); err != nil {
-		t.status = StatusPortBusy
-		t.err = err
-		t.mu.Unlock()
-		return
-	} else {
-		_ = ln.Close()
+	for _, r := range h {
+		if !(r == '.' || r == '-' || r == '_' ||
+			(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9')) {
+			return fmt.Errorf("remote host %q contains invalid char %q", h, r)
+		}
 	}
-
-	cmd := exec.Command("ssh", "-N",
-		"-o", "ExitOnForwardFailure=yes",
-		"-o", "ServerAliveInterval=30",
-		"-L", t.Spec.String(),
-		t.Host)
-	if err := cmd.Start(); err != nil {
-		t.status = StatusError
-		t.err = err
-		t.mu.Unlock()
-		return
-	}
-	t.cmd = cmd
-	t.status = StatusStarting
-	t.err = nil
-	t.mu.Unlock()
-
-	go t.watch(cmd)
-}
-
-func (t *Tunnel) watch(cmd *exec.Cmd) {
-	werr := cmd.Wait()
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.cmd != cmd {
-		return
-	}
-	t.cmd = nil
-	if werr != nil && !errors.Is(werr, exec.ErrNotFound) {
-		t.status = StatusError
-		t.err = werr
-		return
-	}
-	t.status = StatusStopped
-}
-
-// Probe verifies the forward by dialing the local port. Promotes
-// Starting → Up on the first successful dial; demotes Up → Starting
-// if a dial fails (the watcher will set Error/Stopped if the process
-// dies).
-func (t *Tunnel) Probe() {
-	t.mu.Lock()
-	cmd := t.cmd
-	status := t.status
-	port := t.Spec.LocalPort
-	t.mu.Unlock()
-
-	if cmd == nil {
-		return
-	}
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 250*time.Millisecond)
-
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.cmd != cmd {
-		return
-	}
-	if err == nil {
-		_ = conn.Close()
-		t.status = StatusUp
-		t.err = nil
-		return
-	}
-	if status == StatusUp {
-		t.status = StatusStarting
-	}
-}
-
-// Stop kills the ssh child if running. Safe to call multiple times.
-func (t *Tunnel) Stop() {
-	t.mu.Lock()
-	cmd := t.cmd
-	t.cmd = nil
-	if t.status != StatusError && t.status != StatusPortBusy {
-		t.status = StatusStopped
-	}
-	t.mu.Unlock()
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
-	}
-}
-
-// Snapshot returns the current status and last error.
-func (t *Tunnel) Snapshot() (Status, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.status, t.err
+	return nil
 }

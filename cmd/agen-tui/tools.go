@@ -192,6 +192,16 @@ func (v toolsView) CloseOverlay() toolsView {
 	return v
 }
 
+// Reset jumps the cursor back to the newest tool call and drops the
+// previously-anchored selection. Called when entering the tools view
+// so users always land on a known position.
+func (v toolsView) Reset() toolsView {
+	v.cursor = 0
+	v.offset = 0
+	v.anchor = ""
+	return v.clamp()
+}
+
 // nameStyleFor maps a tool name to a foreground colour by category.
 func nameStyleFor(name string) lipgloss.Style {
 	switch name {

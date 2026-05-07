@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path"
 	"strings"
+	"syscall"
 
 	"github.com/pimrutgers/agen-tui/internal/git"
 )
@@ -204,8 +205,13 @@ func (b SSHBackend) StreamSessionBytes(remotePath string) (<-chan []byte, func()
 }
 
 // streamTail starts cmd, pipes stdout into a buffered channel, and returns a
-// cancel func that kills the process. Chunks are 4 KiB each.
+// cancel func that kills the process group. Chunks are 4 KiB each.
+//
+// We put the child in its own process group (Setpgid) so cancel can kill
+// the entire group with one syscall. ssh-over-tail spawns no further
+// children today, but if it ever did, this prevents orphaned descendants.
 func streamTail(cmd *exec.Cmd) (<-chan []byte, func(), error) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, err
@@ -231,9 +237,11 @@ func streamTail(cmd *exec.Cmd) (<-chan []byte, func(), error) {
 		}
 	}()
 	cancel := func() {
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
+		if cmd.Process == nil {
+			return
 		}
+		// Negative PID = signal entire process group.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	return ch, cancel, nil
 }

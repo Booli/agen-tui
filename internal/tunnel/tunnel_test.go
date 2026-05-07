@@ -1,8 +1,6 @@
 package tunnel
 
 import (
-	"net"
-	"strconv"
 	"testing"
 )
 
@@ -27,7 +25,22 @@ func TestParseSpecFull(t *testing.T) {
 }
 
 func TestParseSpecInvalid(t *testing.T) {
-	cases := []string{"", "abc", "5137:host", "0", "99999", ":host:80", "80:host:abc"}
+	cases := []string{
+		"",
+		"abc",
+		"5137:host",
+		"0",
+		"99999",
+		":host:80",
+		"80:host:abc",
+		"80::8080",                   // empty remote host
+		"80: :8080",                  // whitespace-only remote host
+		"-1:host:80",                 // negative port
+		"80:host with space:8080",    // space in remote host
+		"80:host;rm:8080",            // shell-meta in remote host
+		"80:`hostname`:8080",         // backticks
+		"80:$HOST:8080",              // env-expansion attempt
+	}
 	for _, c := range cases {
 		if _, err := ParseSpec(c); err == nil {
 			t.Errorf("ParseSpec(%q) should have errored", c)
@@ -42,60 +55,43 @@ func TestSpecString(t *testing.T) {
 	}
 }
 
-// pickFreePort returns a port that was free at the moment of the call.
-func pickFreePort(t *testing.T) int {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	_, p, _ := net.SplitHostPort(ln.Addr().String())
-	port, _ := strconv.Atoi(p)
-	return port
-}
-
-func TestStartDetectsPortBusy(t *testing.T) {
-	// Hold a port so Start() must report it busy.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	_, p, _ := net.SplitHostPort(ln.Addr().String())
-	port, _ := strconv.Atoi(p)
-
-	tn := New("nonexistent.invalid", Spec{LocalPort: port, RemoteHost: "localhost", RemotePort: port})
-	tn.Start()
-	defer tn.Stop()
-
-	status, _ := tn.Snapshot()
-	if status != StatusPortBusy {
-		t.Errorf("status = %v, want StatusPortBusy", status)
-	}
-}
-
-func TestStopOnUnstartedIsSafe(t *testing.T) {
-	tn := New("h", Spec{LocalPort: pickFreePort(t)})
-	tn.Stop()
-	tn.Stop()
-	status, _ := tn.Snapshot()
-	if status != StatusStopped {
-		t.Errorf("status = %v, want StatusStopped", status)
-	}
-}
-
 func TestStatusString(t *testing.T) {
 	cases := map[Status]string{
 		StatusStopped:  "stopped",
 		StatusStarting: "starting",
 		StatusUp:       "up",
+		StatusDead:     "dead",
 		StatusPortBusy: "port-busy",
 		StatusError:    "error",
 	}
 	for s, want := range cases {
 		if s.String() != want {
 			t.Errorf("Status(%d).String() = %q, want %q", s, s.String(), want)
+		}
+	}
+}
+
+func TestValidateHost(t *testing.T) {
+	good := []string{"host", "user@host", "user@host.example.com", "abc-123_x", "h"}
+	for _, h := range good {
+		if err := validateHost(h); err != nil {
+			t.Errorf("validateHost(%q) unexpected error: %v", h, err)
+		}
+	}
+	bad := []string{
+		"",
+		" ",
+		"-oProxyCommand=foo", // argument injection
+		"-N",
+		"host;rm -rf /",
+		"host with space",
+		"host\nnewline",
+		"host`backtick`",
+		"host$VAR",
+	}
+	for _, h := range bad {
+		if err := validateHost(h); err == nil {
+			t.Errorf("validateHost(%q) should have errored", h)
 		}
 	}
 }

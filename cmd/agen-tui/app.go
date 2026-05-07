@@ -5,7 +5,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/pimrutgers/agen-tui/internal/backend"
 	"github.com/pimrutgers/agen-tui/internal/session"
 	"github.com/pimrutgers/agen-tui/internal/theme"
@@ -25,13 +24,14 @@ const (
 	modeFlat viewMode = iota
 	modeTree
 	modeTools
+	modeTunnels
 )
 
 // statsLines is the fixed height of the bottom Claude session strip.
 const statsLines = 4
 
-// chromeRows is how many rows a view spends on header + divider +
-// divider + footer. flatView uses one extra row for its summary.
+// chromeRows: title(1) + tabsDivider(1) + bottomDivider(1) + footer(1) = 4.
+// flat mode adds a summary row.
 func (m model) chromeRows() int {
 	if m.mode == modeFlat && m.fileDetail == nil {
 		return 5
@@ -41,8 +41,12 @@ func (m model) chromeRows() int {
 
 type model struct {
 	dir     string
+	host    string // empty == local; non-empty enables the tunnels view
 	backend backend.Backend
-	tunnels []*tunnel.Tunnel
+	// tunnels is a snapshot of the on-disk registry, refreshed on every
+	// tunnelTick. The slice is *not* owned by the model — sources of truth
+	// are the JSON file and the running ssh PIDs.
+	tunnels []tunnel.Entry
 
 	// snapshot data
 	repoRoot string
@@ -66,9 +70,10 @@ type model struct {
 	allTimeCache map[string]cachedSession
 
 	// sub-views
-	flat  flatView
-	tree  treeView
-	tools toolsView
+	flat        flatView
+	tree        treeView
+	tools       toolsView
+	tunnelsView tunnelsView
 
 	// file-detail overlay (shared by flat & tree)
 	fileDetail *fileDetailView
@@ -79,63 +84,101 @@ type model struct {
 	gitHeight int
 }
 
-func initialModel(dir string, b backend.Backend, tunnels []*tunnel.Tunnel) model {
+func initialModel(dir, host string, b backend.Backend) model {
 	return model{
-		dir:     dir,
-		backend: b,
-		tunnels: tunnels,
-		flat:    newFlatView(),
-		tree:    newTreeView(),
-		tools:   newToolsView(),
+		dir:         dir,
+		host:        host,
+		backend:     b,
+		flat:        newFlatView(),
+		tree:        newTreeView(),
+		tools:       newToolsView(),
+		tunnelsView: newTunnelsView().SetDefaultHost(host),
 	}
 }
 
+// modeCount is 4: flat, tree, tools, tunnels. The tunnels view is
+// always reachable — in local mode it shows what's currently forwarded
+// and lets you add new ones with explicit host.
+func (m model) modeCount() viewMode { return 4 }
+
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{
+	// Tunnels are loaded from the on-disk registry on every tick — even in
+	// local mode, since other agen-tui instances may have added some.
+	return tea.Batch(
 		doRefresh(m.dir, m.backend),
 		gitTick(),
 		startSessionStream(m.dir, m.backend),
 		doAllTimeRefresh(m.dir, m.backend, m.allTimeCache),
 		allTimeTick(),
+		loadTunnels(),
+		tunnelTick(),
+	)
+}
+
+// shutdown runs the cleanup path: cancel the active tail-F stream so
+// the child ssh tail isn't orphaned. Tunnels are deliberately NOT
+// touched — they live in the on-disk registry and persist across
+// agen-tui exits and other instances.
+func (m *model) shutdown() {
+	if m.sessionStreamEnd != nil {
+		m.sessionStreamEnd()
+		m.sessionStreamEnd = nil
 	}
-	if len(m.tunnels) > 0 {
-		cmds = append(cmds, doTunnelProbe(m.tunnels), tunnelTick())
-	}
-	return tea.Batch(cmds...)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
+	case shutdownMsg:
+		m.shutdown()
+		return m, tea.Quit
+
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.gitHeight = m.height - statsLines
-		if m.gitHeight < 4 {
-			m.gitHeight = 4
-		}
 		m = m.relayout()
 
 	case tea.KeyMsg:
+		// While the tunnels-add input is open, swallow all keys into the
+		// view so digits and letters don't trigger global hotkeys.
+		if m.mode == modeTunnels && m.tunnelsView.Adding() {
+			return m.routeKey(msg)
+		}
 		switch msg.String() {
 		case "q", "ctrl+c":
-			if m.sessionStreamEnd != nil {
-				m.sessionStreamEnd()
-			}
+			m.shutdown()
 			return m, tea.Quit
 		case "r":
 			return m, doRefresh(m.dir, m.backend)
 		case "T":
-			toggleTunnels(m.tunnels)
-			return m, doTunnelProbe(m.tunnels)
+			return m, toggleAllTunnelsCmd(m.tunnels)
+		case "1":
+			m.mode = modeFlat
+			return m.relayout(), nil
+		case "2":
+			m.mode = modeTree
+			return m.relayout(), nil
+		case "3":
+			m.mode = modeTools
+			m.tools = m.tools.Reset()
+			return m.relayout(), nil
+		case "4":
+			m.mode = modeTunnels
+			return m.relayout(), nil
 		case "t", "tab":
 			if m.fileDetail == nil && !m.tools.HasOverlay() {
-				m.mode = (m.mode + 1) % 3
+				m.mode = (m.mode + 1) % m.modeCount()
+				if m.mode == modeTools {
+					m.tools = m.tools.Reset()
+				}
 				m = m.relayout()
 			}
 			return m, nil
 		case "shift+tab":
 			if m.fileDetail == nil && !m.tools.HasOverlay() {
-				m.mode = (m.mode + 2) % 3
+				m.mode = (m.mode + m.modeCount() - 1) % m.modeCount()
+				if m.mode == modeTools {
+					m.tools = m.tools.Reset()
+				}
 				m = m.relayout()
 			}
 			return m, nil
@@ -249,11 +292,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(doAllTimeRefresh(m.dir, m.backend, m.allTimeCache), allTimeTick())
 
 	case tunnelTickMsg:
-		return m, tea.Batch(doTunnelProbe(m.tunnels), tunnelTick())
+		return m, tea.Batch(loadTunnels(), tunnelTick())
 
-	case tunnelProbedMsg:
-		// Snapshot read happens in View(); this msg just triggers a render.
+	case tunnelsRefreshedMsg:
+		prevHasAny := len(m.tunnels) > 0
+		m.tunnels = msg.entries
+		m.tunnelsView = m.tunnelsView.SetData(m.tunnels)
+		// gitHeight depends on whether the strip is shown — recompute when
+		// the count crosses 0 ↔ 1+.
+		if prevHasAny != (len(m.tunnels) > 0) {
+			m = m.relayout()
+		}
 		return m, nil
+
+	case addTunnelMsg:
+		return m, addTunnel(msg.host, msg.spec)
+
+	case removeTunnelMsg:
+		return m, removeTunnel(msg.id)
+
+	case toggleTunnelMsg:
+		return m, toggleTunnel(msg.id)
 	}
 	return m, nil
 }
@@ -281,11 +340,27 @@ func (m model) bodyHeight() int {
 	return body
 }
 
+// tunnelStripRows is 1 when at least one tunnel exists (always-visible
+// status row above the claude strip), else 0.
+func (m model) tunnelStripRows() int {
+	if len(m.tunnels) > 0 {
+		return 1
+	}
+	return 0
+}
+
 func (m model) relayout() model {
+	if m.height > 0 {
+		m.gitHeight = m.height - statsLines - m.tunnelStripRows()
+		if m.gitHeight < 4 {
+			m.gitHeight = 4
+		}
+	}
 	bodyH := m.bodyHeight()
 	m.flat = m.flat.SetSize(m.width, bodyH)
 	m.tree = m.tree.SetSize(m.width, bodyH)
 	m.tools = m.tools.SetSize(m.width, bodyH)
+	m.tunnelsView = m.tunnelsView.SetSize(m.width, bodyH).SetData(m.tunnels)
 	if m.fileDetail != nil {
 		d := m.fileDetail.SetSize(m.width, bodyH)
 		m.fileDetail = &d
@@ -307,6 +382,8 @@ func (m model) routeKey(msg tea.Msg) (model, tea.Cmd) {
 		m.tree, cmd = m.tree.Update(msg)
 	case modeTools:
 		m.tools, cmd = m.tools.Update(msg)
+	case modeTunnels:
+		m.tunnelsView, cmd = m.tunnelsView.Update(msg)
 	}
 	return m, cmd
 }
@@ -314,8 +391,18 @@ func (m model) routeKey(msg tea.Msg) (model, tea.Cmd) {
 // ── view ─────────────────────────────────────────────────────────────────────
 
 func (m model) View() string {
-	git := lipgloss.NewStyle().Height(m.gitHeight).Render(m.viewGit())
-	return git + m.viewSession()
+	// Pad-or-crop to exactly gitHeight rows so a long view body (e.g. a
+	// full tools list with multi-line rows) can't push the chrome above
+	// it off-screen.
+	content := strings.TrimRight(m.viewGit(), "\n")
+	lines := strings.Split(content, "\n")
+	if len(lines) > m.gitHeight {
+		lines = lines[:m.gitHeight]
+	}
+	for len(lines) < m.gitHeight {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n") + "\n" + m.viewTunnelStrip() + m.viewSession()
 }
 
 func (m model) viewGit() string {
@@ -324,8 +411,8 @@ func (m model) viewGit() string {
 	}
 
 	var lines []string
-	lines = append(lines, headerWithTabs(m.repoRoot, m.branch, m.mode, m.width))
-	lines = append(lines, divider(m.width))
+	lines = append(lines, titleRow(m.repoRoot, m.branch))
+	lines = append(lines, tabsDivider(m.mode, m.width))
 
 	if m.fileDetail != nil {
 		overlayLabel := "diff"
@@ -356,6 +443,10 @@ func (m model) viewGit() string {
 		} else {
 			lines = append(lines, m.modeFooter())
 		}
+	case modeTunnels:
+		lines = append(lines, m.tunnelsView.View())
+		lines = append(lines, divider(m.width))
+		lines = append(lines, m.modeFooter())
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
@@ -363,11 +454,16 @@ func (m model) viewGit() string {
 func (m model) modeFooter() string {
 	switch m.mode {
 	case modeFlat:
-		return theme.Muted.Render(" ⏎:diff  o:edit  q:quit")
+		return theme.Muted.Render(" ⏎:diff  o:edit  1-4:view  q:quit")
 	case modeTree:
-		return theme.Muted.Render(" ⏎:view  o:edit  q:quit")
+		return theme.Muted.Render(" ⏎:view  o:edit  1-4:view  q:quit")
 	case modeTools:
-		return " " + theme.Muted.Render("["+m.tools.FilterLabel()+"]  f:filter  ⏎:detail  q:quit")
+		return " " + theme.Muted.Render("["+m.tools.FilterLabel()+"]  f:filter  ⏎:detail  1-4:view  q:quit")
+	case modeTunnels:
+		if m.tunnelsView.Adding() {
+			return theme.Muted.Render(" enter:confirm  esc:cancel")
+		}
+		return theme.Muted.Render(" a:add  d:del  space:toggle  1-4:view  q:quit")
 	}
 	return ""
 }
