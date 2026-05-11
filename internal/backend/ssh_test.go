@@ -119,7 +119,8 @@ func TestSSHBackendSnapshot(t *testing.T) {
 		"main" + sep +
 		" M foo.go\n?? bar.go\n" + sep +
 		"foo.go\nbaz.go\n" + sep +
-		"bar.go\n"
+		"bar.go\n" + sep +
+		".env\n"
 	b := SSHBackend{host: "h", run: func(cmd string) ([]byte, error) {
 		return []byte(out), nil
 	}}
@@ -133,8 +134,18 @@ func TestSSHBackendSnapshot(t *testing.T) {
 	if len(snap.Status) != 2 {
 		t.Errorf("len(Status) = %d, want 2", len(snap.Status))
 	}
-	if len(snap.AllFiles) != 3 {
-		t.Errorf("len(AllFiles) = %d, want 3 (tracked+untracked combined)", len(snap.AllFiles))
+	if len(snap.AllFiles) != 4 {
+		t.Errorf("len(AllFiles) = %d, want 4 (tracked+untracked+ignored)", len(snap.AllFiles))
+	}
+	// Ignored file should be prefixed with "~"
+	hasIgnored := false
+	for _, f := range snap.AllFiles {
+		if f == "~.env" {
+			hasIgnored = true
+		}
+	}
+	if !hasIgnored {
+		t.Errorf("AllFiles should contain ~.env (ignored), got %v", snap.AllFiles)
 	}
 }
 

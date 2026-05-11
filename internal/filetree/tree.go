@@ -9,12 +9,16 @@ type Node struct {
 	Name     string
 	Path     string // repo-relative; "" for synthetic root
 	IsDir    bool
+	Ignored  bool   // gitignored file — shown greyed out
 	XY       string // git porcelain XY codes; "" = clean
 	Children []*Node
 }
 
 // Symbol returns a one-char git decoration.
 func (n *Node) Symbol() string {
+	if n.Ignored {
+		return "~"
+	}
 	switch {
 	case n.XY == "??":
 		return "?"
@@ -34,20 +38,31 @@ func (n *Node) Symbol() string {
 }
 
 // Build creates a file tree from repo-relative paths with git status overlay.
+// Paths prefixed with "~" (as returned by ParseFilesOutput) are gitignored
+// files — they are inserted without an XY code and marked Ignored.
 func Build(files []string, statusMap map[string]string) *Node {
 	root := &Node{IsDir: true}
 	for _, f := range files {
 		if f == "" {
 			continue
 		}
-		insert(root, strings.Split(f, "/"), "", statusMap[f])
+		ignored := strings.HasPrefix(f, "~")
+		if ignored {
+			f = f[1:]
+		}
+		n := insert(root, strings.Split(f, "/"), "", statusMap[f])
+		if ignored {
+			n.Ignored = true
+		}
 	}
 	bubble(root)
 	sortTree(root)
 	return root
 }
 
-func insert(parent *Node, parts []string, pathPrefix string, xy string) {
+// insert recurses into the tree, creating nodes as needed, and returns
+// the leaf node for the file.
+func insert(parent *Node, parts []string, pathPrefix string, xy string) *Node {
 	name := parts[0]
 	nodePath := pathPrefix + name
 	isLeaf := len(parts) == 1
@@ -65,9 +80,9 @@ func insert(parent *Node, parts []string, pathPrefix string, xy string) {
 	}
 	if isLeaf {
 		child.XY = xy
-	} else {
-		insert(child, parts[1:], nodePath+"/", xy)
+		return child
 	}
+	return insert(child, parts[1:], nodePath+"/", xy)
 }
 
 // bubble propagates the highest-priority git status from children up to parents.

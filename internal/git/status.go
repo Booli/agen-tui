@@ -13,9 +13,13 @@ type FileStatus struct {
 	OldPath  string // set on renames
 	Added    int    // lines added (from diff --numstat)
 	Deleted  int    // lines deleted
+	Ignored  bool   // true for gitignored files (shown greyed out)
 }
 
 func (f FileStatus) Symbol() string {
+	if f.Ignored {
+		return "~"
+	}
 	xy := string([]byte{f.X, f.Y})
 	switch {
 	case xy == "??":
@@ -127,29 +131,52 @@ func numstat(root, path string) (int, int) {
 	return 0, 0
 }
 
-// AllFiles returns all tracked and untracked non-ignored files as repo-relative paths.
+// AllFiles returns tracked, untracked, and gitignored files as repo-relative
+// paths. Ignored files are appended last (they're shown greyed out in the
+// tree but excluded from the flat/diff views).
 func AllFiles(root string) ([]string, error) {
 	out1, err := exec.Command("git", "-C", root, "ls-files").Output()
 	if err != nil {
 		return nil, err
 	}
 	out2, _ := exec.Command("git", "-C", root, "ls-files", "--others", "--exclude-standard").Output()
-	return ParseFilesOutput(string(out1), string(out2)), nil
+	out3, _ := exec.Command("git", "-C", root, "ls-files", "--others", "--ignored", "--exclude-standard").Output()
+	return ParseFilesOutput(string(out1), string(out2), string(out3)), nil
 }
 
-// ParseFilesOutput merges the outputs of `git ls-files` and
-// `git ls-files --others --exclude-standard`, deduplicating entries.
-func ParseFilesOutput(tracked, untracked string) []string {
+// ParseFilesOutput merges the outputs of `git ls-files`, `git ls-files
+// --others --exclude-standard`, and `git ls-files --others --ignored
+// --exclude-standard`, deduplicating entries. The ignored argument is
+// optional (pass "" to skip).
+func ParseFilesOutput(tracked, untracked, ignored string) []string {
 	seen := make(map[string]bool)
 	var files []string
-	combined := strings.TrimRight(tracked+untracked, "\n")
-	for _, line := range strings.Split(combined, "\n") {
-		if line != "" && !seen[line] {
+	for _, line := range splitLines(tracked + untracked) {
+		if !seen[line] {
 			seen[line] = true
 			files = append(files, line)
 		}
 	}
+	// Append ignored files as "~<path>" so callers can distinguish them
+	// from regular files without a separate API. The filetree builder
+	// and backend strip and re-attach this marker.
+	for _, line := range splitLines(ignored) {
+		if !seen[line] {
+			seen[line] = true
+			files = append(files, "~"+line)
+		}
+	}
 	return files
+}
+
+func splitLines(s string) []string {
+	var out []string
+	for _, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 // Diff returns the unified diff for a single repo-relative path,

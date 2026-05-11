@@ -68,7 +68,8 @@ func (b SSHBackend) AllFiles(root string) ([]string, error) {
 		return nil, err
 	}
 	untracked, _ := b.run(fmt.Sprintf("git -C %s ls-files --others --exclude-standard 2>/dev/null", q))
-	return git.ParseFilesOutput(string(tracked), string(untracked)), nil
+	ignored, _ := b.run(fmt.Sprintf("git -C %s ls-files --others --ignored --exclude-standard 2>/dev/null", q))
+	return git.ParseFilesOutput(string(tracked), string(untracked), string(ignored)), nil
 }
 
 // snapshotSentinel separates the five outputs of a batched Snapshot.
@@ -88,8 +89,10 @@ git -C "$R" status --porcelain 2>/dev/null
 printf '%%s' %s
 git -C "$R" ls-files 2>/dev/null
 printf '%%s' %s
-git -C "$R" ls-files --others --exclude-standard 2>/dev/null`,
-		ShellQuote(dir), sep, sep, sep, sep)
+git -C "$R" ls-files --others --exclude-standard 2>/dev/null
+printf '%%s' %s
+git -C "$R" ls-files --others --ignored --exclude-standard 2>/dev/null`,
+		ShellQuote(dir), sep, sep, sep, sep, sep)
 
 	out, err := b.run(script)
 	if err != nil {
@@ -99,11 +102,15 @@ git -C "$R" ls-files --others --exclude-standard 2>/dev/null`,
 	if len(parts) < 5 || strings.TrimSpace(parts[0]) == "" {
 		return Snapshot{}, nil
 	}
+	ignored := ""
+	if len(parts) >= 6 {
+		ignored = parts[5]
+	}
 	return Snapshot{
 		Root:     strings.TrimSpace(parts[0]),
 		Branch:   strings.TrimSpace(parts[1]),
 		Status:   git.ParseStatusOutput(parts[2]),
-		AllFiles: git.ParseFilesOutput(parts[3], parts[4]),
+		AllFiles: git.ParseFilesOutput(parts[3], parts[4], ignored),
 	}, nil
 }
 

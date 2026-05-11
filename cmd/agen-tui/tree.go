@@ -336,6 +336,8 @@ func (v treeView) renderMatchLine(n *filetree.Node, selected bool) string {
 		style = theme.Conflict
 	case "R":
 		style = theme.Renamed
+	case "~":
+		style = theme.Muted
 	default:
 		style = lipgloss.NewStyle()
 	}
@@ -404,12 +406,16 @@ func (v treeView) renderLine(item visItem, selected bool) string {
 		style = theme.Conflict
 	case "R":
 		style = theme.Renamed
+	case "~":
+		style = theme.Muted
 	default:
 		style = lipgloss.NewStyle()
 	}
 
 	line := cursor + " " + indent + icon + " " + style.Render(name)
-	if sym != "" {
+	if sym == "~" {
+		line += " " + theme.Muted.Render(sym)
+	} else if sym != "" {
 		line += " " + style.Render(sym)
 	}
 	return line

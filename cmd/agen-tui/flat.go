@@ -49,7 +49,9 @@ type flatView struct {
 
 func newFlatView() flatView { return flatView{keys: newFlatKeys()} }
 
-// SetData updates files (called from model on refreshMsg).
+// SetData updates files (called from model on refreshMsg). Ignored files
+// are excluded from the flat view — they have no git diff, so they'd
+// just add noise. They appear in the tree view greyed out instead.
 func (v flatView) SetData(files []git.FileStatus, repoRoot string) flatView {
 	v.files = files
 	v.repoRoot = repoRoot
@@ -59,6 +61,7 @@ func (v flatView) SetData(files []git.FileStatus, repoRoot string) flatView {
 	}
 	return v.clamp()
 }
+
 
 // Searching reports whether the / input is active. App.go uses this
 // to keep digit/letter keys out of the global hotkey switch.
