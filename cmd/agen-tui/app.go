@@ -154,7 +154,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.routeKey(msg)
 		}
 		switch msg.String() {
-		case "q", "ctrl+c":
+		case "q":
+			if m.fileDetail != nil || m.tools.HasOverlay() {
+				return m, closeOverlay()
+			}
+			m.shutdown()
+			return m, tea.Quit
+		case "ctrl+c":
 			m.shutdown()
 			return m, tea.Quit
 		case "r":
@@ -501,5 +507,5 @@ func (m model) modeFooter() string {
 
 func (m model) overlayFooter(label string) string {
 	return " " + theme.Cyan.Render(label) + "  " +
-		theme.Muted.Render("esc/⏎:back  j/k:scroll  q:quit")
+		theme.Muted.Render("esc/⏎/q:back  j/k:scroll")
 }
