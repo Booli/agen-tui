@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/pimrutgers/agen-tui/internal/backend"
+	"github.com/pimrutgers/agen-tui/internal/config"
 	"github.com/pimrutgers/agen-tui/internal/session"
 	"github.com/pimrutgers/agen-tui/internal/theme"
 	"github.com/pimrutgers/agen-tui/internal/tunnel"
@@ -84,13 +85,13 @@ type model struct {
 	gitHeight int
 }
 
-func initialModel(dir, host string, b backend.Backend) model {
+func initialModel(dir, host string, b backend.Backend, cfg config.Config) model {
 	return model{
 		dir:         dir,
 		host:        host,
 		backend:     b,
 		flat:        newFlatView(),
-		tree:        newTreeView(),
+		tree:        newTreeView(cfg),
 		tools:       newToolsView(),
 		tunnelsView: newTunnelsView().SetDefaultHost(host),
 	}
@@ -491,7 +492,7 @@ func (m model) modeFooter() string {
 		if m.tools.Searching() {
 			return theme.Muted.Render(" enter:keep  esc:clear")
 		}
-		hint := "["+m.tools.FilterLabel()+"]  f:filter  /:search  ⏎:detail  1-4:view  q:quit"
+		hint := "[" + m.tools.FilterLabel() + "]  f:filter  /:search  ⏎:detail  1-4:view  q:quit"
 		if m.tools.SearchQuery() != "" {
 			hint = "[/" + m.tools.SearchQuery() + "]  " + hint
 		}

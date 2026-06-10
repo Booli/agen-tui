@@ -1,11 +1,10 @@
 package main
 
 import (
-	"path/filepath"
-	"strings"
-
 	"github.com/charmbracelet/lipgloss"
 	"github.com/pimrutgers/agen-tui/internal/theme"
+	"path/filepath"
+	"strings"
 )
 
 // titleRow renders the repo name + current branch on its own row.
