@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/pimrutgers/agen-tui/internal/backend"
+	"github.com/pimrutgers/agen-tui/internal/config"
 	"github.com/pimrutgers/agen-tui/internal/tunnel"
 )
 
@@ -64,7 +65,12 @@ func main() {
 		}
 	}
 
-	p := tea.NewProgram(initialModel(dir, host, b), tea.WithAltScreen())
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: config: %v\n", err)
+	}
+
+	p := tea.NewProgram(initialModel(dir, host, b, cfg), tea.WithAltScreen())
 
 	// Forward SIGHUP/SIGTERM to the program so the model can run its
 	// cleanup path (kill the active tail-F ssh, stop tunnels) before

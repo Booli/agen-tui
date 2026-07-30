@@ -119,6 +119,30 @@ matches `café`.
 
 `enter` keeps the filter and resumes navigation; `esc` clears it.
 
+## Configuration
+
+Optional. Drop a JSON file at `~/.config/agen-tui/config.json` (or point
+`$AGEN_TUI_CONFIG` at one; `$XDG_CONFIG_HOME` is honored). Any key you omit
+keeps its default, so a partial file is fine.
+
+```json
+{
+  "showIcons": true,
+  "collapseFolders": false
+}
+```
+
+- `showIcons` (default `false`) — turn on Nerd Font tree decorations:
+  open/close chevrons, folder and file device-icons, and small git-status
+  glyphs (`●` `○` `✕` `→` …). Requires a Nerd Font in your terminal. When
+  off, the tree keeps its plain `▶`/`▼` arrows and letter status codes.
+- `collapseFolders` (default `false`) — start the tree with every folder
+  collapsed. When off (the default), top-level folders and the ancestors of
+  any changed file are expanded on first load.
+
+A missing file uses the defaults; a malformed file logs a warning to stderr
+and falls back to the defaults.
+
 ## Tmux integration
 
 Bind a toggle to `prefix + g`:

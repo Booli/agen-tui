@@ -6,10 +6,48 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/pimrutgers/agen-tui/internal/config"
 	"github.com/pimrutgers/agen-tui/internal/filetree"
 	"github.com/pimrutgers/agen-tui/internal/fuzzy"
+	"github.com/pimrutgers/agen-tui/internal/icons"
 	"github.com/pimrutgers/agen-tui/internal/theme"
 )
+
+// renderIcon styles a Nerd Font icon. Ignored (gitignored) entries render
+// muted; otherwise the device-icon brand color is applied when present.
+func renderIcon(ic icons.Icon, muted bool) string {
+	switch {
+	case muted:
+		return theme.Muted.Render(ic.Glyph)
+	case ic.Color != "":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color(ic.Color)).Render(ic.Glyph)
+	}
+	return ic.Glyph
+}
+
+// gitMark maps a Node.Symbol() code to a small status glyph and its color,
+// snacks.nvim-style (dots/arrows instead of letters), used when icons are on.
+// Returns ("", _) for a clean node. The style also tints the file name.
+func gitMark(sym string) (string, lipgloss.Style) {
+	switch sym {
+	case "?":
+		return "?", theme.Untracked
+	case "M":
+		return "○", theme.Modified // hollow dot
+	case "A":
+		return "●", theme.Staged // filled dot
+	case "D":
+		return "✕", theme.Deleted // cross
+	case "!":
+		return "!", theme.Conflict
+	case "R":
+		return "→", theme.Renamed // arrow
+	case "~":
+		return "~", theme.Muted
+	default:
+		return "", lipgloss.NewStyle()
+	}
+}
 
 type treeKeyMap struct {
 	Up     key.Binding
@@ -45,6 +83,14 @@ type treeView struct {
 	repoRoot string
 	keys     treeKeyMap
 
+	// showIcons enables Nerd Font decorations (folder/file icons, chevrons,
+	// git-status glyphs). When false the tree uses plain arrows + letters.
+	showIcons bool
+
+	// collapseFolders starts every folder collapsed on first load instead of
+	// auto-expanding top-level dirs and the ancestors of changed files.
+	collapseFolders bool
+
 	// fuzzy search state. When query != "" the view switches from a
 	// tree to a flat ranked list of matching files (preserves the
 	// repo-wide search story without trying to maintain a partial tree).
@@ -53,24 +99,27 @@ type treeView struct {
 	matches   []*filetree.Node
 }
 
-func newTreeView() treeView {
+func newTreeView(cfg config.Config) treeView {
 	return treeView{
-		expanded: map[string]bool{},
-		keys:     newTreeKeys(),
+		expanded:        map[string]bool{},
+		keys:            newTreeKeys(),
+		showIcons:       cfg.ShowIcons,
+		collapseFolders: cfg.CollapseFolders,
 	}
 }
 
-func (v treeView) Searching() bool   { return v.searching }
+func (v treeView) Searching() bool     { return v.searching }
 func (v treeView) SearchQuery() string { return v.query }
 
 // SetData refreshes the tree from a new filetree root. On the first
 // load (when expanded is empty), top-level dirs and ancestors of any
-// touched file are auto-expanded.
+// touched file are auto-expanded — unless collapseFolders is set, in which
+// case every folder starts collapsed.
 func (v treeView) SetData(root *filetree.Node, repoRoot string) treeView {
 	firstLoad := root != nil && len(v.expanded) == 0
 	v.root = root
 	v.repoRoot = repoRoot
-	if firstLoad {
+	if firstLoad && !v.collapseFolders {
 		for _, c := range root.Children {
 			if c.IsDir {
 				v.expanded[c.Path] = true
@@ -322,27 +371,26 @@ func (v treeView) renderMatchLine(n *filetree.Node, selected bool) string {
 		cursor = theme.Cyan.Render("❯")
 	}
 	sym := n.Symbol()
-	var style lipgloss.Style
-	switch sym {
-	case "?":
-		style = theme.Untracked
-	case "M":
-		style = theme.Modified
-	case "A":
-		style = theme.Staged
-	case "D":
-		style = theme.Deleted
-	case "!":
-		style = theme.Conflict
-	case "R":
-		style = theme.Renamed
-	case "~":
-		style = theme.Muted
-	default:
-		style = lipgloss.NewStyle()
+	glyph, style := gitMark(sym)
+
+	// prefix = cursor + space + (file icon + space, only with icons on).
+	prefix := cursor + " "
+	prefixCols := 2
+	symbol := sym
+	if v.showIcons {
+		prefix += renderIcon(icons.FileIcon(n.Name), n.Ignored) + " "
+		prefixCols += 2
+		symbol = glyph
+	} else {
+		prefix += " "
+		prefixCols++
 	}
-	prefix := cursor + "  "
-	maxPath := v.width - len(prefix) - 2
+
+	suffixCols := 0
+	if symbol != "" {
+		suffixCols = 2
+	}
+	maxPath := v.width - prefixCols - suffixCols
 	if maxPath < 8 {
 		maxPath = 8
 	}
@@ -351,8 +399,8 @@ func (v treeView) renderMatchLine(n *filetree.Node, selected bool) string {
 		path = "…" + path[len(path)-maxPath+1:]
 	}
 	line := prefix + style.Render(path)
-	if sym != "" {
-		line += " " + style.Render(sym)
+	if symbol != "" {
+		line += " " + style.Render(symbol)
 	}
 	return line
 }
@@ -365,21 +413,49 @@ func (v treeView) renderLine(item visItem, selected bool) string {
 		cursor = theme.Cyan.Render("❯")
 	}
 
-	icon := " "
-	if n.IsDir {
-		if item.expanded {
-			icon = "▼"
-		} else {
-			icon = "▶"
-		}
-	}
-
 	indent := strings.Repeat("  ", item.depth)
 	sym := n.Symbol()
+	glyph, style := gitMark(sym)
 
-	prefixLen := 2 + len(indent) + 2
+	// iconSeg is everything between the indent and the file name. With icons
+	// off it's the classic arrow column; with icons on it's a chevron plus a
+	// device-icon (snacks.nvim-style). iconCols is its display width.
+	var iconSeg string
+	var iconCols int
+	symbol := sym // trailing status mark: a letter without icons, a glyph with
+	if v.showIcons {
+		chevron := " "
+		var ic icons.Icon
+		if n.IsDir {
+			if item.expanded {
+				chevron = "" // nf-fa-chevron_down
+				ic = icons.FolderOpen
+			} else {
+				chevron = "" // nf-fa-chevron_right
+				ic = icons.FolderClosed
+			}
+		} else {
+			ic = icons.FileIcon(n.Name)
+		}
+		iconSeg = theme.Muted.Render(chevron) + " " + renderIcon(ic, n.Ignored) + " "
+		iconCols = 4 // chevron + space + icon + space
+		symbol = glyph
+	} else {
+		arrow := " "
+		if n.IsDir {
+			if item.expanded {
+				arrow = "▼"
+			} else {
+				arrow = "▶"
+			}
+		}
+		iconSeg = arrow + " "
+		iconCols = 2 // arrow + space
+	}
+
+	prefixLen := 2 + len(indent) + iconCols
 	suffixLen := 0
-	if sym != "" {
+	if symbol != "" {
 		suffixLen = 2
 	}
 	nameWidth := v.width - prefixLen - suffixLen
@@ -392,31 +468,9 @@ func (v treeView) renderLine(item visItem, selected bool) string {
 		name = name[:nameWidth-1] + "…"
 	}
 
-	var style lipgloss.Style
-	switch sym {
-	case "?":
-		style = theme.Untracked
-	case "M":
-		style = theme.Modified
-	case "A":
-		style = theme.Staged
-	case "D":
-		style = theme.Deleted
-	case "!":
-		style = theme.Conflict
-	case "R":
-		style = theme.Renamed
-	case "~":
-		style = theme.Muted
-	default:
-		style = lipgloss.NewStyle()
-	}
-
-	line := cursor + " " + indent + icon + " " + style.Render(name)
-	if sym == "~" {
-		line += " " + theme.Muted.Render(sym)
-	} else if sym != "" {
-		line += " " + style.Render(sym)
+	line := cursor + " " + indent + iconSeg + style.Render(name)
+	if symbol != "" {
+		line += " " + style.Render(symbol)
 	}
 	return line
 }
